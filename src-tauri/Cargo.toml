@@ -1,0 +1,22 @@
+[package]
+name = "gold-pawn-pro"
+version = "0.1.0"
+description = "Offline-first gold pawn shop management"
+authors = ["Golden Ledger"]
+edition = "2021"
+
+[lib]
+name = "gold_pawn_pro_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
+keyring = { version = "3", features = ["windows-native", "linux-native"] }
+rand = "0.8"
+serde_json = "1.0.154"
+tauri = { version = "2", features = [] }
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }

@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Local ledger database access for the main window","local":true,"windows":["main"],"permissions":["core:default","sql:default"]}}

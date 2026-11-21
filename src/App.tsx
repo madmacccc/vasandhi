@@ -5,14 +5,16 @@ import {
 } from "lucide-react";
 import ReceiptPrint from "./components/ReceiptPrint";
 import SignaturePad from "./components/SignaturePad";
-import AuthGate from "./components/AuthGate";
-import { getSession, resolveShop, signIn, signOut, signUp, subscribeToAuthChanges } from "./services/auth";
 import {
-  createId, deleteTicket, getCachedCloudContext, loadLedger, restoreLedger, savePawnRecord,
+  createId, deleteTicket, loadLedger, restoreLedger, savePawnRecord,
   savePayment, setCloudContext, syncCloudLedger, updatePawnRecord,
 } from "./services/database";
+import {
+  getSession, resolveShop, signIn, signOut, signUp, subscribeToAuthChanges,
+} from "./services/auth";
+import AuthGate from "./components/AuthGate";
+import type { Session } from "@supabase/supabase-js";
 import { decryptSignature, encryptSignature } from "./services/signature";
-import { supabase } from "./services/supabase";
 import { translate as t } from "./translations";
 import type { Customer, Language, LedgerData, Payment, PaymentMethod, PawnTicket } from "./types";
 import { localDateKey } from "./utils/date";
@@ -41,9 +43,6 @@ const dateAfterDays = (days: number) => {
   date.setDate(date.getDate() + days);
   return localDateKey(date);
 };
-const pendingSyncMessage = (language: Language) => language === "ta"
-  ? "சாதனத்தில் சேமிக்கப்பட்டது; Supabase ஒத்திசைவு உறுதிப்படுத்தப்படவில்லை."
-  : "Saved on this device; Supabase sync could not be confirmed.";
 const emptyLedger: LedgerData = {
   customers: [], tickets: [], payments: [],
   settings: { name: "Sri Vasanthi Jewellery Pawn Broker", defaultRateBps: 1600, interestMethod: "daily", dayCountBasis: 365, currency: "INR" },
@@ -99,12 +98,10 @@ function App() {
   const [ledger, setLedger] = useState<LedgerData>(emptyLedger);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [cloudIssue, setCloudIssue] = useState("");
-  const [authReady, setAuthReady] = useState(false);
-  const [authUser, setAuthUser] = useState<{ id: string; email: string } | null>(null);
-  const [authError, setAuthError] = useState("");
-  const [authBusy, setAuthBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [session, setSession] = useState<Session | null>(null);
+  const [authBusy, setAuthBusy] = useState(true);
+  const [authError, setAuthError] = useState("");
   const [activeTab, setActiveTab] = useState<"new" | "ledger">("new");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "redeemed">("all");
@@ -118,26 +115,14 @@ function App() {
   const [printTicketId, setPrintTicketId] = useState("");
   const [printSignature, setPrintSignature] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
-  const authUserId = useRef("");
   const tr = (key: Parameters<typeof t>[1]) => t(language, key);
 
   async function refresh(showLoading = true) {
     if (showLoading) setLoading(true);
-    let synced = false;
-    try {
-      if (supabase) {
-        await syncCloudLedger();
-        synced = true;
-        setCloudIssue("");
-      }
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      setCloudIssue(`Cloud sync could not be confirmed: ${message}`);
-    }
     try {
       setLedger(await loadLedger());
       setError("");
-      return synced;
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : tr("dataError"));
       return false;
@@ -146,104 +131,44 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    let active = true;
-    let generation = 0;
-    if (!supabase) {
-      setAuthError("Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
-      setAuthReady(true);
-      setLoading(false);
+  async function connectCloud(nextSession: Session | null) {
+    setSession(nextSession);
+    setAuthError("");
+    if (!nextSession) {
+      await setCloudContext(undefined);
+      setAuthBusy(false);
       return;
     }
-
-    async function applySession(session: Awaited<ReturnType<typeof getSession>>) {
-      const currentGeneration = ++generation;
-      if (!session) {
-        await setCloudContext(undefined, false);
-        if (active && currentGeneration === generation) {
-          authUserId.current = "";
-          setAuthUser(null);
-          setAuthReady(true);
-          setLoading(false);
-        }
-        return;
-      }
-      const user = { id: session.user.id, email: session.user.email ?? "" };
-      authUserId.current = user.id;
-      let cached: Awaited<ReturnType<typeof getCachedCloudContext>> = undefined;
-      let cloudShopResolved = false;
-      try {
-        cached = await getCachedCloudContext();
-        const shopId = await resolveShop(user.id);
-        cloudShopResolved = true;
-        if (!active || currentGeneration !== generation) return;
-        if (cached && cached.shopId !== shopId) {
-          throw new Error("This device's offline cache is linked to a different shop. Use its original account or a separate device/profile.");
-        }
-        await setCloudContext({ shopId, userId: user.id });
-        setAuthError("");
-        setAuthUser(user);
-        setAuthReady(true);
-        await refresh();
-      } catch (reason) {
-        if (!active || currentGeneration !== generation) return;
-        if (!cloudShopResolved && cached?.userId === user.id) {
-          await setCloudContext(cached);
-          setAuthError("");
-          setAuthUser(user);
-          setAuthReady(true);
-          setCloudIssue(`Unable to connect to Supabase: ${reason instanceof Error ? reason.message : String(reason)}`);
-          await refresh();
-        } else {
-          await setCloudContext(undefined, false);
-          setAuthUser(null);
-          setAuthError(reason instanceof Error ? reason.message : "Unable to verify this account's shop.");
-          setAuthReady(true);
-          setLoading(false);
-          try {
-            await signOut();
-          } catch (signOutError) {
-            setAuthError(`${reason instanceof Error ? reason.message : String(reason)}; sign out failed: ${signOutError instanceof Error ? signOutError.message : String(signOutError)}`);
-          }
-        }
-      }
+    setAuthBusy(true);
+    try {
+      const shopId = await resolveShop(nextSession.user.id);
+      await setCloudContext({ shopId, userId: nextSession.user.id });
+      await syncCloudLedger();
+      await refresh(false);
+    } catch (reason) {
+      setAuthError(reason instanceof Error ? reason.message : "Could not connect to Supabase.");
+    } finally {
+      setAuthBusy(false);
     }
+  }
 
-    const unsubscribe = subscribeToAuthChanges((session) => { void applySession(session); });
-    void getSession().then(applySession).catch((reason: unknown) => {
-      if (!active) return;
-      setAuthError(reason instanceof Error ? reason.message : "Unable to check the Supabase session.");
-      setAuthReady(true);
-      setLoading(false);
-    });
-    const retrySync = async () => {
-      const userId = authUserId.current;
-      if (!userId) return;
-      try {
-        const shopId = await resolveShop(userId);
-        const cached = await getCachedCloudContext();
-        if (cached && cached.shopId !== shopId) {
-          throw new Error("The signed-in account does not match this device's cached shop.");
-        }
-        await setCloudContext({ shopId, userId });
-        await refresh(false);
-      } catch (reason) {
-        setCloudIssue(`Unable to sync with Supabase: ${reason instanceof Error ? reason.message : String(reason)}`);
-      }
-    };
-    window.addEventListener("online", retrySync);
-    return () => {
-      active = false;
-      unsubscribe();
-      window.removeEventListener("online", retrySync);
-    };
-  }, []);
+  async function syncNow() {
+    try {
+      await syncCloudLedger();
+      await refresh(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Cloud sync failed.");
+    }
+  }
 
   async function handleSignIn(email: string, password: string) {
     setAuthBusy(true);
     setAuthError("");
     try {
       await signIn(email, password);
+    } catch (reason) {
+      setAuthError(reason instanceof Error ? reason.message : "Sign-in failed.");
+      throw reason;
     } finally {
       setAuthBusy(false);
     }
@@ -254,10 +179,43 @@ function App() {
     setAuthError("");
     try {
       return await signUp(email, password);
+    } catch (reason) {
+      setAuthError(reason instanceof Error ? reason.message : "Account creation failed.");
+      throw reason;
     } finally {
       setAuthBusy(false);
     }
   }
+
+  async function handleSignOut() {
+    setAuthBusy(true);
+    try {
+      await signOut();
+      await setCloudContext(undefined);
+      setSession(null);
+    } catch (reason) {
+      setAuthError(reason instanceof Error ? reason.message : "Sign-out failed.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+    void getSession().then(connectCloud).catch((reason) => {
+      setAuthError(reason instanceof Error ? reason.message : "Could not read authentication state.");
+      setAuthBusy(false);
+    });
+    const unsubscribe = subscribeToAuthChanges((nextSession) => {
+      void connectCloud(nextSession);
+    });
+    const handleOnline = () => void syncNow();
+    window.addEventListener("online", handleOnline);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
 
   function notify(message: string) {
     setNotice(message);
@@ -453,13 +411,14 @@ function App() {
     try {
       if (oldTicket) await updatePawnRecord(customer, ticket);
       else await savePawnRecord(customer, ticket, ledger.customers.some((item) => item.id === customer.id));
-      const synced = await refresh(false);
+      await refresh(false);
+      void syncNow();
       setEditingTicketId("");
       setSignatureData("");
       setSignatureConsent(false);
       setSignatureKey((key) => key + 1);
       setDraft(blankDraft(ledger.settings.defaultRateBps));
-      notify(synced ? tr("ticketSuccess") : pendingSyncMessage(language));
+      notify(tr("ticketSuccess"));
       if (printAfterSave) void printReceipt(ticket);
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : tr("saveFailed"));
@@ -498,9 +457,10 @@ function App() {
     };
     try {
       await savePayment(payment, redeem);
-      const synced = await refresh(false);
+      await refresh(false);
+      void syncNow();
       setPaymentDialog(null);
-      notify(synced ? tr("paymentSuccess") : pendingSyncMessage(language));
+      notify(tr("paymentSuccess"));
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : tr("saveFailed"));
     }
@@ -510,8 +470,9 @@ function App() {
     if (ticket.status !== "active" || !window.confirm(tr("confirmDelete"))) return;
     try {
       await deleteTicket(ticket.id);
-      const synced = await refresh(false);
-      notify(synced ? tr("ticketDeleted") : pendingSyncMessage(language));
+      await refresh(false);
+      void syncNow();
+      notify(tr("ticketDeleted"));
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : tr("saveFailed"));
     }
@@ -541,8 +502,9 @@ function App() {
         throw new Error(tr("restoreEmptyOnly"));
       }
       await restoreLedger(wrapped);
-      const synced = await refresh(false);
-      notify(synced ? tr("restoreSuccess") : pendingSyncMessage(language));
+      await refresh(false);
+      void syncNow();
+      notify(tr("restoreSuccess"));
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : tr("invalidBackup"));
     } finally {
@@ -554,11 +516,15 @@ function App() {
     ? ledger.payments.filter((payment) => payment.ticketId === selectedTicket.id)
     : [];
 
-  if (!authReady) {
-    return <main className="auth-page"><p>Connecting to Supabase…</p></main>;
-  }
-  if (!authUser) {
-    return <AuthGate busy={authBusy} error={authError} onSignIn={handleSignIn} onSignUp={handleSignUp} />;
+  if (!session) {
+    return (
+      <AuthGate
+        busy={authBusy}
+        error={authError}
+        onSignIn={handleSignIn}
+        onSignUp={handleSignUp}
+      />
+    );
   }
 
   return (
@@ -573,9 +539,10 @@ function App() {
           </div>
         </div>
         <div className="admin-header-actions">
-          <span className={`admin-local ${cloudIssue ? "pending" : ""}`}><i /> {cloudIssue ? "Offline · sync pending" : "Supabase · synced"}</span>
+          <span className="admin-local"><i /> Supabase sync</span>
+          <button className="admin-button admin-button-light" type="button" onClick={() => void syncNow()}>Sync now</button>
+          <button className="admin-button admin-button-light" type="button" onClick={() => void handleSignOut()}>Sign out</button>
           <label className="admin-language"><Languages size={17} /><select aria-label="Language" value={language} onChange={(event) => setLanguage(event.target.value as Language)}><option value="ta">தமிழ்</option><option value="en">English</option></select><ChevronDown size={14} /></label>
-          <button className="admin-button admin-button-light" onClick={() => { void signOut().catch((reason: unknown) => setAuthError(reason instanceof Error ? reason.message : "Sign out failed.")); }}>{authUser.email || "Sign out"} · Sign out</button>
           <button className="admin-button admin-button-light" onClick={exportBackup}><Archive size={16} />{tr("backup")}</button>
           <button className="admin-button admin-button-light" onClick={() => fileInput.current?.click()}><RotateCcw size={16} />{tr("restore")}</button>
           <input ref={fileInput} className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => void importBackup(event.currentTarget.files?.[0])} />
@@ -584,7 +551,6 @@ function App() {
 
       <main className="admin-main">
         {error && <div className="error-banner" role="alert">{error}</div>}
-        {cloudIssue && <div className="loading-banner" role="status">{cloudIssue}. The local cache remains available and queued changes will retry when possible.</div>}
         {loading && <div className="loading-banner">{language === "ta" ? "பதிவேடு ஏற்றப்படுகிறது…" : "Loading ledger…"}</div>}
         <section className="admin-metrics">
           <AdminMetric icon={FileClock} label={tr("totalReceipts")} value={String(ledger.tickets.length)} meta={language === "ta" ? "அனைத்து அடகு ரசீதுகள்" : "All pawn receipts"} />
@@ -703,7 +669,7 @@ function App() {
           </section>
         )}
 
-        <footer className="admin-footer"><span><ShieldCheck size={15} />Supabase cloud ledger with local offline cache</span><span>{tr("shopName")} <b>·</b> {authUser.email}</span></footer>
+        <footer className="admin-footer"><span><ShieldCheck size={15} />Local cache + Supabase sync</span><span>{tr("shopName")}</span></footer>
       </main>
 
       {paymentDialog && selectedTicket && selectedCustomer && selectedBalance && (

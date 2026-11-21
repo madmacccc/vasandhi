@@ -38,7 +38,7 @@ The initial default is daily/365. These are explicit calculation options, not a 
 ## Supabase setup
 
 1. Create a Supabase project and review the RLS policies in `supabase/schema.sql` with the shop's data-protection and access-control requirements.
-2. Apply migrations in order: `20261116000000_initial_schema.sql`, then `20261116000100_record_payment.sql`. Alternatively, apply the full `supabase/schema.sql` to a new project.
+2. Apply migrations in order: `20261116000000_initial_schema.sql`, `20261116000100_record_payment.sql`, then `20261121000000_fix_bootstrap_shop.sql`. Alternatively, apply the full `supabase/schema.sql` to a new project.
 3. Enable email/password in Supabase Auth. Configure email confirmation according to the shop's onboarding needs.
 4. Copy `.env.example` to `.env` and set `VITE_SUPABASE_URL` and the project's **anon/publishable** key. Never add a service-role key to this repository, frontend, or desktop bundle.
 5. Start the app and create the first account. It creates a shop and admin membership; sign in with that account on other devices to access the same cloud ledger.

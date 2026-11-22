@@ -11,6 +11,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@firebase/app": "^0.16.7",
+    "@firebase/auth": "^1.13.11",
     "@fontsource/dm-sans": "^5.2.6",
     "@fontsource/manrope": "^5.2.6",
     "@fontsource/noto-sans-tamil": "^5.2.6",

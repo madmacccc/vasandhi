@@ -10,7 +10,7 @@ import {
   savePayment, setCloudContext, syncCloudLedger, updatePawnRecord,
 } from "./services/database";
 import {
-  getSession, resolveShop, signIn, signOut, signUp, subscribeToAuthChanges,
+  resolveShop, sendPasswordReset, signIn, signOut, subscribeToAuthChanges,
 } from "./services/auth";
 import AuthGate from "./components/AuthGate";
 import type { Session } from "@supabase/supabase-js";
@@ -21,7 +21,8 @@ import { localDateKey } from "./utils/date";
 import { formatMoney, netWeight, ticketBalance } from "./utils/finance";
 
 type Draft = {
-  customerDetails: string;
+  customerName: string;
+  customerAddress: string;
   mobile: string;
   jewelleryType: string;
   purity: PawnTicket["purity"];
@@ -50,7 +51,7 @@ const emptyLedger: LedgerData = {
 
 function blankDraft(rateBps = 1600): Draft {
   return {
-    customerDetails: "", mobile: "", jewelleryType: "", purity: "22K",
+    customerName: "", customerAddress: "", mobile: "", jewelleryType: "", purity: "22K",
     kilograms: "0", grams: "", milligrams: "0", loan: "", rate: String(rateBps / 100),
     pawnDate: today(), maturityDate: dateAfterDays(90), approximateValue: "",
     monthlyIncome: "", notes: "",
@@ -63,11 +64,6 @@ function receiptSequence(tickets: PawnTicket[]) {
     return match ? Math.max(max, Number(match[1])) : max;
   }, 1000);
   return `SV-${last + 1}`;
-}
-
-function splitCustomerDetails(value: string) {
-  const [name = "", ...address] = value.split(/\r?\n/);
-  return { name: name.trim(), address: address.join("\n").trim() };
 }
 
 function weightToGrams(draft: Draft) {
@@ -174,19 +170,6 @@ function App() {
     }
   }
 
-  async function handleSignUp(email: string, password: string) {
-    setAuthBusy(true);
-    setAuthError("");
-    try {
-      return await signUp(email, password);
-    } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : "Account creation failed.");
-      throw reason;
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
   async function handleSignOut() {
     setAuthBusy(true);
     try {
@@ -202,11 +185,12 @@ function App() {
 
   useEffect(() => {
     void refresh();
-    void getSession().then(connectCloud).catch((reason) => {
-      setAuthError(reason instanceof Error ? reason.message : "Could not read authentication state.");
-      setAuthBusy(false);
-    });
-    const unsubscribe = subscribeToAuthChanges((nextSession) => {
+    const unsubscribe = subscribeToAuthChanges((nextSession, authFailure) => {
+      if (authFailure) {
+        setAuthError(authFailure.message);
+        setAuthBusy(false);
+        return;
+      }
       void connectCloud(nextSession);
     });
     const handleOnline = () => void syncNow();
@@ -241,7 +225,6 @@ function App() {
   ) : undefined;
   const printTicket = ledger.tickets.find((ticket) => ticket.id === printTicketId);
   const printCustomer = printTicket && ledger.customers.find((customer) => customer.id === printTicket.customerId);
-  const previewDetails = splitCustomerDetails(draft.customerDetails);
   const previewWeight = Number.isFinite(weightToGrams(draft)) ? weightToGrams(draft) : 0;
   const draftReceiptNo = editingTicketId
     ? ledger.tickets.find((ticket) => ticket.id === editingTicketId)?.receiptNo ?? receiptSequence(ledger.tickets)
@@ -268,9 +251,9 @@ function App() {
   const previewCustomer: Customer = {
     id: "preview",
     customerNo: "PREVIEW",
-    name: previewDetails.name,
+    name: draft.customerName,
     mobile: draft.mobile,
-    address: previewDetails.address,
+    address: draft.customerAddress,
     idReference: "",
     createdAt: new Date().toISOString(),
   };
@@ -310,7 +293,8 @@ function App() {
     }
     const weightMilli = Math.round(ticket.grossWeight * 1000);
     setDraft({
-      customerDetails: [customer.name, customer.address].filter(Boolean).join("\n"),
+      customerName: customer.name,
+      customerAddress: customer.address,
       mobile: customer.mobile,
       jewelleryType: ticket.jewelleryType,
       purity: ticket.purity,
@@ -336,18 +320,19 @@ function App() {
     event.preventDefault();
     const submitter = (event.nativeEvent as SubmitEvent).submitter;
     const printAfterSave = submitter instanceof HTMLButtonElement && submitter.dataset.print === "true";
-    const customerDetails = splitCustomerDetails(draft.customerDetails);
+    const customerName = draft.customerName.trim();
+    const customerAddress = draft.customerAddress.trim();
     const grossWeight = weightToGrams(draft);
     const loanPaise = Math.round(Number(draft.loan) * 100);
     const rateBps = Math.round(Number(draft.rate) * 100);
     const valuePaise = Math.round(Number(draft.approximateValue) * 100);
     const incomePaise = Math.round(Number(draft.monthlyIncome) * 100);
-    if (!customerDetails.name || !customerDetails.address || !draft.mobile.trim() || !draft.jewelleryType.trim() ||
+    if (!customerName || !draft.mobile.trim() || !draft.jewelleryType.trim() ||
       !/^[6-9]\d{9}$/.test(draft.mobile.trim()) ||
       !Number.isFinite(grossWeight) || grossWeight <= 0 ||
       !Number.isSafeInteger(loanPaise) || loanPaise <= 0 ||
       !Number.isSafeInteger(rateBps) || rateBps < 0 ||
-      !Number.isSafeInteger(valuePaise) || valuePaise <= 0 ||
+      !Number.isSafeInteger(valuePaise) || valuePaise < 0 ||
       !Number.isSafeInteger(incomePaise) || incomePaise < 0) {
       notify(!/^[6-9]\d{9}$/.test(draft.mobile.trim()) && draft.mobile.trim()
         ? tr("invalidMobile") : tr("required"));
@@ -379,15 +364,15 @@ function App() {
     let customer = oldTicket
       ? ledger.customers.find((item) => item.id === oldTicket.customerId)
       : ledger.customers.find((item) => item.mobile === draft.mobile.trim() &&
-        item.name.toLocaleLowerCase() === customerDetails.name.toLocaleLowerCase());
+        item.name.toLocaleLowerCase() === customerName.toLocaleLowerCase());
     const createdAt = new Date().toISOString();
     if (!customer) {
       customer = {
-        id: createId(), customerNo: `CUS-${Date.now()}`, name: customerDetails.name,
-        mobile: draft.mobile.trim(), address: customerDetails.address, idReference: "", createdAt,
+        id: createId(), customerNo: `CUS-${Date.now()}`, name: customerName,
+        mobile: draft.mobile.trim(), address: customerAddress, idReference: "", createdAt,
       };
     } else {
-      customer = { ...customer, name: customerDetails.name, mobile: draft.mobile.trim(), address: customerDetails.address };
+      customer = { ...customer, name: customerName, mobile: draft.mobile.trim(), address: customerAddress };
     }
     const ticket: PawnTicket = {
       id: oldTicket?.id ?? createId(),
@@ -522,7 +507,7 @@ function App() {
         busy={authBusy}
         error={authError}
         onSignIn={handleSignIn}
-        onSignUp={handleSignUp}
+        onPasswordReset={sendPasswordReset}
       />
     );
   }
@@ -571,10 +556,8 @@ function App() {
                 <div><h1>{editingTicketId ? tr("edit") : tr("newPawnTab")}</h1><p>{tr("license")} · {draftReceiptNo}</p></div>
               </div>
               <div className="pawn-form-grid">
-                <label className="admin-field admin-field-full">
-                  <span>{tr("customerDetails")} *</span>
-                  <textarea rows={3} value={draft.customerDetails} onChange={(event) => updateDraft("customerDetails", event.target.value)} placeholder={tr("customerPlaceholder")} required />
-                </label>
+                <AdminInput label={tr("name")} value={draft.customerName} onChange={(value) => updateDraft("customerName", value)} autoComplete="name" required />
+                <AdminInput label={`${tr("address")} (${tr("optional")})`} value={draft.customerAddress} onChange={(value) => updateDraft("customerAddress", value)} />
                 <AdminInput label={tr("mobile")} value={draft.mobile} onChange={(value) => updateDraft("mobile", value)} required maxLength={10} inputMode="numeric" />
                 <AdminInput label={tr("date")} value={draft.pawnDate} onChange={(value) => updateDraft("pawnDate", value)} type="date" required />
                 <label className="admin-field admin-field-full">
@@ -603,8 +586,8 @@ function App() {
                 </div>
                 <AdminInput label={tr("principal")} value={draft.loan} onChange={(value) => updateDraft("loan", value)} type="number" min="0.01" step="0.01" required />
                 <AdminInput label={tr("annualRate")} value={draft.rate} onChange={(value) => updateDraft("rate", value)} type="number" min="0" step="0.01" required />
-                <AdminInput label={tr("approximateValue")} value={draft.approximateValue} onChange={(value) => updateDraft("approximateValue", value)} type="number" min="0.01" step="0.01" required />
-                <AdminInput label={tr("monthlyIncome")} value={draft.monthlyIncome} onChange={(value) => updateDraft("monthlyIncome", value)} type="number" min="0" step="0.01" required />
+                <AdminInput label={`${tr("approximateValue")} (${tr("optional")})`} value={draft.approximateValue} onChange={(value) => updateDraft("approximateValue", value)} type="number" min="0" step="0.01" />
+                <AdminInput label={`${tr("monthlyIncome")} (${tr("optional")})`} value={draft.monthlyIncome} onChange={(value) => updateDraft("monthlyIncome", value)} type="number" min="0" step="0.01" />
                 <AdminInput label={tr("dueDate")} value={draft.maturityDate} onChange={(value) => updateDraft("maturityDate", value)} type="date" required />
                 <label className="admin-field admin-field-full"><span>{tr("notes")}</span><textarea rows={2} value={draft.notes} onChange={(event) => updateDraft("notes", event.target.value)} /></label>
                 <SignaturePad key={signatureKey} label={tr("drawSignature")} clearLabel={tr("clearSignature")} onChange={setSignatureData} />

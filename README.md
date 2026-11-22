@@ -11,7 +11,8 @@ The pawn-ticket form also captures the receipt's estimated article value and the
 - Node.js 20.19+ or 22.12+
 - Rust stable, Cargo and the platform prerequisites for Tauri 2
 - On Windows, Visual Studio C++ Build Tools and WebView2 Runtime
-- Supabase project with email/password authentication enabled
+- Firebase project with Email/Password authentication enabled
+- Supabase project with Firebase third-party authentication enabled
 
 ## Run locally
 
@@ -35,13 +36,14 @@ Money is stored as integer paise. Gold weights are stored to three decimal place
 
 The initial default is daily/365. These are explicit calculation options, not a claim that one method or rounding rule is legally or commercially universal. Have the shop approve the applicable method, day-count basis, payment allocation and rounding terms before use. Current payment allocation applies accrued interest first and then principal. A settlement must match the displayed balance; SQLite validates the local write and the Supabase function records payment plus redemption atomically.
 
-## Supabase setup
+## Authentication and Supabase setup
 
 1. Create a Supabase project and review the RLS policies in `supabase/schema.sql` with the shop's data-protection and access-control requirements.
 2. Apply migrations in order: `20261116000000_initial_schema.sql`, `20261116000100_record_payment.sql`, then `20261121000000_fix_bootstrap_shop.sql`. Alternatively, apply the full `supabase/schema.sql` to a new project.
-3. Enable email/password in Supabase Auth. Configure email confirmation according to the shop's onboarding needs.
-4. Copy `.env.example` to `.env` and set `VITE_SUPABASE_URL` and the project's **anon/publishable** key. Never add a service-role key to this repository, frontend, or desktop bundle.
-5. Start the app and create the first account. It creates a shop and admin membership; sign in with that account on other devices to access the same cloud ledger.
+3. In Firebase Console, enable **Authentication → Email/Password** and add authorised domains for local development and deployment. Create admin accounts in the Firebase Console; public account creation is intentionally disabled in the app. Set a strong Firebase password policy (at least 12 characters with upper- and lowercase letters, a number, and a symbol) and enable email-enumeration protection.
+4. In Supabase, enable Firebase as an Auth third-party provider and configure it with the same Firebase project ID. The app exchanges Firebase ID tokens for Supabase sessions, so Supabase RLS and the existing cloud ledger continue to use authenticated identities.
+5. Copy `.env.example` to `.env` and set the Supabase URL and **anon/publishable** key plus the Firebase web app's API key, auth domain, project ID, and app ID. These Firebase values are public web-app configuration, not service credentials. Never add a Firebase service-account key or Supabase service-role key to this repository, frontend, or desktop bundle.
+6. Start the app and sign in with an admin account created in Firebase Console. The first signed-in account creates a shop and admin membership; use that account on other devices to access the same cloud ledger. Password reset is sent by Firebase.
 
 The local SQLite outbox tracks customer, ticket, payment and audit changes. Payment plus redemption is sent through a database function so settlement and ticket closure are atomic. Cloud errors are shown in the app; queued changes remain on that device until sync succeeds. A device cache is pinned to one shop to prevent one account from uploading another shop's offline data. The local cache and signature-encryption key are device/profile-specific, so signatures encrypted on one device cannot be decrypted on another.
 

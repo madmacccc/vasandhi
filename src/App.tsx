@@ -7,13 +7,13 @@ import ReceiptPrint from "./components/ReceiptPrint";
 import SignaturePad from "./components/SignaturePad";
 import {
   createId, deleteTicket, loadLedger, restoreLedger, savePawnRecord,
-  savePayment, setCloudContext, syncCloudLedger, updatePawnRecord,
+  savePayment, updatePawnRecord,
 } from "./services/database";
 import {
-  resolveShop, sendPasswordReset, signIn, signOut, subscribeToAuthChanges,
+  sendPasswordReset, signIn, signOut, subscribeToAuthChanges,
 } from "./services/auth";
+import type { User } from "@firebase/auth";
 import AuthGate from "./components/AuthGate";
-import type { Session } from "@supabase/supabase-js";
 import { decryptSignature, encryptSignature } from "./services/signature";
 import { translate as t } from "./translations";
 import type { Customer, Language, LedgerData, Payment, PaymentMethod, PawnTicket } from "./types";
@@ -95,7 +95,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [session, setSession] = useState<Session | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authBusy, setAuthBusy] = useState(true);
   const [authError, setAuthError] = useState("");
   const [activeTab, setActiveTab] = useState<"new" | "ledger">("new");
@@ -127,34 +127,14 @@ function App() {
     }
   }
 
-  async function connectCloud(nextSession: Session | null) {
-    setSession(nextSession);
+  function connectLocal(nextUser: User | null) {
+    setFirebaseUser(nextUser);
     setAuthError("");
-    if (!nextSession) {
-      await setCloudContext(undefined);
-      setAuthBusy(false);
-      return;
-    }
-    setAuthBusy(true);
-    try {
-      const shopId = await resolveShop(nextSession.user.id);
-      await setCloudContext({ shopId, userId: nextSession.user.id });
-      await syncCloudLedger();
-      await refresh(false);
-    } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : "Could not connect to Supabase.");
-    } finally {
-      setAuthBusy(false);
-    }
+    setAuthBusy(false);
   }
 
   async function syncNow() {
-    try {
-      await syncCloudLedger();
-      await refresh(false);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Cloud sync failed.");
-    }
+    await refresh(false);
   }
 
   async function handleSignIn(email: string, password: string) {
@@ -174,8 +154,7 @@ function App() {
     setAuthBusy(true);
     try {
       await signOut();
-      await setCloudContext(undefined);
-      setSession(null);
+      setFirebaseUser(null);
     } catch (reason) {
       setAuthError(reason instanceof Error ? reason.message : "Sign-out failed.");
     } finally {
@@ -185,13 +164,13 @@ function App() {
 
   useEffect(() => {
     void refresh();
-    const unsubscribe = subscribeToAuthChanges((nextSession, authFailure) => {
+    const unsubscribe = subscribeToAuthChanges((nextUser, authFailure) => {
       if (authFailure) {
         setAuthError(authFailure.message);
         setAuthBusy(false);
         return;
       }
-      void connectCloud(nextSession);
+      connectLocal(nextUser);
     });
     const handleOnline = () => void syncNow();
     window.addEventListener("online", handleOnline);
@@ -501,7 +480,7 @@ function App() {
     ? ledger.payments.filter((payment) => payment.ticketId === selectedTicket.id)
     : [];
 
-  if (!session) {
+  if (!firebaseUser) {
     return (
       <AuthGate
         busy={authBusy}
@@ -524,8 +503,8 @@ function App() {
           </div>
         </div>
         <div className="admin-header-actions">
-          <span className="admin-local"><i /> Supabase sync</span>
-          <button className="admin-button admin-button-light" type="button" onClick={() => void syncNow()}>Sync now</button>
+          <span className="admin-local"><i /> Local device ledger</span>
+          <button className="admin-button admin-button-light" type="button" onClick={() => void syncNow()}>Refresh</button>
           <button className="admin-button admin-button-light" type="button" onClick={() => void handleSignOut()}>Sign out</button>
           <label className="admin-language"><Languages size={17} /><select aria-label="Language" value={language} onChange={(event) => setLanguage(event.target.value as Language)}><option value="ta">தமிழ்</option><option value="en">English</option></select><ChevronDown size={14} /></label>
           <button className="admin-button admin-button-light" onClick={exportBackup}><Archive size={16} />{tr("backup")}</button>
@@ -652,7 +631,7 @@ function App() {
           </section>
         )}
 
-        <footer className="admin-footer"><span><ShieldCheck size={15} />Local cache + Supabase sync</span><span>{tr("shopName")}</span></footer>
+        <footer className="admin-footer"><span><ShieldCheck size={15} />Firebase login + local cache</span><span>{tr("shopName")}</span></footer>
       </main>
 
       {paymentDialog && selectedTicket && selectedCustomer && selectedBalance && (

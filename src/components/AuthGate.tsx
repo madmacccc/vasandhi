@@ -152,7 +152,7 @@ export default function AuthGate({ busy, error, onSignIn, onPasswordReset }: Aut
 
           <div className="auth-divider"><span>SECURE CONNECTION</span></div>
           <p className="auth-security-note">
-            Your account is managed by Firebase Authentication. Shop records stay in your secure Supabase workspace.
+            Your account is managed by Firebase Authentication. Shop records remain on this device.
           </p>
           <footer className="auth-panel-footer">
             <span>© Sri Vasanthi Jewellery Pawn Broker</span>

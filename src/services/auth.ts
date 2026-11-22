@@ -3,8 +3,6 @@ import {
   getAuth, onAuthStateChanged, sendPasswordResetEmail,
   signInWithEmailAndPassword, signOut as firebaseSignOut, type Auth, type User,
 } from "@firebase/auth";
-import type { Session } from "@supabase/supabase-js";
-import { requireSupabase } from "./supabase";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -14,7 +12,6 @@ const firebaseConfig = {
 };
 
 let firebaseAuth: Auth | undefined;
-const sessionExchanges = new Map<string, { token: string; session: Promise<Session> }>();
 
 function requireFirebaseAuth(): Auth {
   if (firebaseAuth) return firebaseAuth;
@@ -54,40 +51,9 @@ function authError(reason: unknown): Error {
   return reason instanceof Error ? reason : new Error("Authentication failed. Please try again.");
 }
 
-async function exchangeFirebaseSession(user: User): Promise<Session> {
-  const token = await user.getIdToken();
-  const cached = sessionExchanges.get(user.uid);
-  if (cached?.token === token) return cached.session;
-
-  const session = (async () => {
-    const { data, error } = await requireSupabase().auth.signInWithIdToken({
-      provider: "firebase",
-      token,
-    });
-    if (error) {
-      const detail = error.message.trim();
-      throw new Error(
-        `Firebase sign-in worked, but Supabase rejected the Firebase identity: ${detail}. ` +
-        "Enable Firebase as a third-party provider in Supabase Authentication settings and set its Firebase project ID to " +
-        `${firebaseConfig.projectId}.`,
-      );
-    }
-    if (!data.session) throw new Error("Supabase did not return an authenticated session.");
-    return data.session;
-  })();
-  sessionExchanges.set(user.uid, { token, session });
-  try {
-    return await session;
-  } catch (reason) {
-    if (sessionExchanges.get(user.uid)?.session === session) sessionExchanges.delete(user.uid);
-    throw reason;
-  }
-}
-
 export async function signIn(email: string, password: string): Promise<void> {
   try {
-    const { user } = await signInWithEmailAndPassword(requireFirebaseAuth(), email.trim(), password);
-    await exchangeFirebaseSession(user);
+    await signInWithEmailAndPassword(requireFirebaseAuth(), email.trim(), password);
   } catch (reason) {
     throw authError(reason);
   }
@@ -105,54 +71,20 @@ export async function signOut(): Promise<void> {
   try {
     const auth = requireFirebaseAuth();
     if (auth.currentUser) await firebaseSignOut(auth);
-    const { error } = await requireSupabase().auth.signOut();
-    if (error) throw error;
   } catch (reason) {
     throw authError(reason);
   }
 }
 
 export function subscribeToAuthChanges(
-  onChange: (session: Session | null, error?: Error) => void,
+  onChange: (user: User | null, error?: Error) => void,
 ): () => void {
   try {
     return onAuthStateChanged(requireFirebaseAuth(), (user) => {
-      void (async () => {
-        try {
-          if (!user) {
-            const { error } = await requireSupabase().auth.signOut();
-            if (error) throw error;
-            onChange(null);
-            return;
-          }
-          onChange(await exchangeFirebaseSession(user));
-        } catch (reason) {
-          onChange(null, authError(reason));
-        }
-      })();
+      onChange(user);
     });
   } catch (reason) {
     queueMicrotask(() => onChange(null, authError(reason)));
     return () => undefined;
   }
-}
-
-export async function resolveShop(userId: string): Promise<string> {
-  const client = requireSupabase();
-  const { data: membership, error } = await client
-    .from("shop_memberships")
-    .select("shop_id, created_at")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  if (membership) return membership.shop_id;
-
-  const { data: shopId, error: bootstrapError } = await client.rpc("bootstrap_shop", {
-    shop_name: "Sri Vasanthi Jewellery Pawn Broker",
-  });
-  if (bootstrapError) throw bootstrapError;
-  if (typeof shopId !== "string") throw new Error("Supabase did not return a shop ID.");
-  return shopId;
 }

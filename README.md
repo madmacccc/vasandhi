@@ -1,10 +1,10 @@
 # Golden Ledger — Pawn Management
 
-A Supabase-backed pawn billing application for Sri Vasanthi Jewellery Pawn Broker, with a local SQLite cache and offline write queue. The interface provides Tamil/English switching, a pawn-entry form with a live A4 receipt preview, searchable ticket ledger, payment collection/history, full-settlement redemption, and JSON backup/restore.
+A Firebase-authenticated pawn billing application for Sri Vasanthi Jewellery Pawn Broker, with a local SQLite cache. The interface provides Tamil/English switching, a pawn-entry form with a live A4 receipt preview, searchable ticket ledger, payment collection/history, full-settlement redemption, and JSON backup/restore.
 
 The pawn-ticket form also captures the receipt's estimated article value and the customer's declared average monthly income. It includes a signature pad; saving requires the customer's consent. Signature images are encrypted with AES-256-GCM using a random key stored in the operating-system credential store in Tauri or IndexedDB in the browser, and are decrypted only to print a receipt. The thumbprint option shown on the paper form is not captured digitally. If the key is removed or lost, a previously encrypted signature cannot be recovered.
 
-> **Scope and readiness:** This is not yet a production-complete shop system. Supabase Auth and sync are implemented for customers, pawn tickets, payments, shop settings and audit records. Browser and Tauri installations each maintain a device-local SQLite cache/outbox; pending changes sync when the signed-in user reconnects. User/role administration, customer photo/ID management, thermal-printer integration, advanced report/export formats, and Windows installer verification are not implemented. A4 black-and-white pawn receipts can be printed from the preview or ledger. JSON restore requires an empty local ledger and should be used only after confirming the cloud ledger is empty. Test and retain backups independently before relying on them. The interface follows the supplied admin reference, and the traditional receipt is a responsive reconstruction rather than a pixel-exact copy. Do not use this build as the sole record system for real financial operations until the remaining security controls and acceptance testing have been completed.
+> **Scope and readiness:** This build uses Firebase only for administrator authentication. Customer, ticket and payment records remain in a device-local SQLite cache; there is no cloud ledger or cross-device sync. Browser and Tauri installations maintain separate databases. User/role administration, customer photo/ID management, thermal-printer integration, advanced report/export formats, and Windows installer verification are not implemented. A4 black-and-white pawn receipts can be printed from the preview or ledger. Test and retain backups independently before relying on them. The interface follows the supplied admin reference, and the traditional receipt is a responsive reconstruction rather than a pixel-exact copy. Do not use this build as the sole record system for real financial operations until the remaining security controls and acceptance testing have been completed.
 
 ## Requirements
 
@@ -12,7 +12,6 @@ The pawn-ticket form also captures the receipt's estimated article value and the
 - Rust stable, Cargo and the platform prerequisites for Tauri 2
 - On Windows, Visual Studio C++ Build Tools and WebView2 Runtime
 - Firebase project with Email/Password authentication enabled
-- Supabase project with Firebase third-party authentication enabled
 
 ## Run locally
 
@@ -36,16 +35,14 @@ Money is stored as integer paise. Gold weights are stored to three decimal place
 
 The initial default is daily/365. These are explicit calculation options, not a claim that one method or rounding rule is legally or commercially universal. Have the shop approve the applicable method, day-count basis, payment allocation and rounding terms before use. Current payment allocation applies accrued interest first and then principal. A settlement must match the displayed balance; SQLite validates the local write and the Supabase function records payment plus redemption atomically.
 
-## Authentication and Supabase setup
+## Firebase authentication setup
 
-1. Create a Supabase project and review the RLS policies in `supabase/schema.sql` with the shop's data-protection and access-control requirements.
-2. Apply migrations in order: `20261116000000_initial_schema.sql`, `20261116000100_record_payment.sql`, then `20261121000000_fix_bootstrap_shop.sql`. Alternatively, apply the full `supabase/schema.sql` to a new project.
-3. In Firebase Console, enable **Authentication → Email/Password** and add authorised domains for local development and deployment. Create admin accounts in the Firebase Console; public account creation is intentionally disabled in the app. Set a strong Firebase password policy (at least 12 characters with upper- and lowercase letters, a number, and a symbol) and enable email-enumeration protection.
-4. In Supabase, enable Firebase as an Auth third-party provider and configure it with the same Firebase project ID. The app exchanges Firebase ID tokens for Supabase sessions, so Supabase RLS and the existing cloud ledger continue to use authenticated identities.
-5. Copy `.env.example` to `.env` and set the Supabase URL and **anon/publishable** key plus the Firebase web app's API key, auth domain, project ID, and app ID. These Firebase values are public web-app configuration, not service credentials. Never add a Firebase service-account key or Supabase service-role key to this repository, frontend, or desktop bundle.
-6. Start the app and sign in with an admin account created in Firebase Console. The first signed-in account creates a shop and admin membership; use that account on other devices to access the same cloud ledger. Password reset is sent by Firebase.
+1. In Firebase Console, enable **Authentication → Sign-in method → Email/Password** and add authorised domains for local development and deployment.
+2. Create admin accounts in the Firebase Console. Public account creation is intentionally disabled in the app.
+3. Copy `.env.example` to `.env` and set the Firebase web app's API key, auth domain, project ID, and app ID. These Firebase values are public web-app configuration, not service credentials.
+4. Start the app and sign in with an admin account created in Firebase Console. Password reset is sent by Firebase.
 
-The local SQLite outbox tracks customer, ticket, payment and audit changes. Payment plus redemption is sent through a database function so settlement and ticket closure are atomic. Cloud errors are shown in the app; queued changes remain on that device until sync succeeds. A device cache is pinned to one shop to prevent one account from uploading another shop's offline data. The local cache and signature-encryption key are device/profile-specific, so signatures encrypted on one device cannot be decrypted on another.
+The local SQLite cache and signature-encryption key are device/profile-specific. Records are not synchronized to Supabase or another device. Use the app's JSON backup and restore controls to transfer records manually.
 
 ## Windows installer
 

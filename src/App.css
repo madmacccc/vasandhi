@@ -222,6 +222,10 @@
 .receipt-items th, .receipt-items td { border: 1px solid #858198; padding: 5px 3px; }
 .receipt-items th { color: #5145a6; background: #f1efff; }
 .receipt-bottom, .receipt-contact { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 8px; }
+.receipt-photos { display: flex; justify-content: center; gap: 12mm; margin-top: 8px; }
+.receipt-photos figure { display: flex; flex-direction: column; align-items: center; gap: 3px; margin: 0; }
+.receipt-photos img { width: 28mm; height: 23mm; border: 1px solid #aaa8bc; border-radius: 3px; object-fit: contain; }
+.receipt-photos figcaption { font-size: 7px; text-align: center; }
 .receipt-signatures { display: flex; justify-content: space-between; margin-top: 33px; padding-bottom: 7px; font-size: 8px; font-weight: 600; }
 .receipt-sheet footer { border-top: 1.5px solid #332a62; padding-top: 6px; color: #5543a8; font-size: 8px; font-weight: 700; text-align: center; }
 .ledger-panel { padding: 21px; }

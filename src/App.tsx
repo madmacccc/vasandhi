@@ -6,7 +6,8 @@ import {
 } from 'lucide-react'
 import type { User } from '@supabase/supabase-js'
 import {
-  adminEmail, listPawnRecords, removePawnRecord, savePawnRecords, supabase, supabaseConfigured,
+  adminEmail, getPawnPhotoDataUrl, getPawnPhotoUrl, listPawnRecords, removePawnPhotos, removePawnRecord,
+  savePawnRecords, supabase, supabaseConfigured, uploadPawnPhoto,
 } from './lib/supabase'
 import type { PawnDraft, PawnRecord } from './types'
 import './App.css'
@@ -37,6 +38,8 @@ const formatDate = (date: string): string => {
 
 const formatMoney = (value: number | string): string =>
   Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })
+
+const isDataPhoto = (value: string): boolean => value.startsWith('data:image/')
 
 function readImageAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -71,12 +74,12 @@ async function captureVideoFrame(video: HTMLVideoElement): Promise<string> {
     canvas.getContext('2d')?.drawImage(video, 0, 0, width, height)
     for (const quality of [0.75, 0.6, 0.45, 0.3]) {
       const blob = await canvasToBlob(canvas, quality)
-      if (blob.size < 20 * 1024) {
+      if (blob.size <= 512 * 1024) {
         return readImageAsDataUrl(new File([blob], 'camera-photo.jpg', { type: 'image/jpeg' }))
       }
     }
   }
-  throw new Error('Captured photo could not be reduced below 20 KB')
+  throw new Error('Captured photo could not be reduced below 512 KB')
 }
 
 const initialDraft = (records: PawnRecord[] = []): PawnDraft => {
@@ -185,6 +188,7 @@ function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [records, setRecords] = useState<PawnRecord[]>([])
+  const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({})
   const [dataLoading, setDataLoading] = useState(false)
   const [dataError, setDataError] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
@@ -284,6 +288,28 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [toast])
 
+  useEffect(() => {
+    let active = true
+    const paths = [...new Set([
+      ...records.flatMap(record => [record.customerPhoto, record.productImage]),
+      draft.customerPhoto,
+      draft.productImage,
+    ].filter((photo): photo is string => typeof photo === 'string' && photo.length > 0 && !isDataPhoto(photo)))]
+    if (!paths.length) {
+      setPhotoUrls({})
+      return
+    }
+    Promise.all(paths.map(async path => [path, await getPawnPhotoUrl(path)] as const))
+      .then(entries => {
+        if (active) setPhotoUrls(Object.fromEntries(entries))
+      })
+      .catch(error => {
+        console.error('Supabase photo load failed:', error)
+        if (active) setToast({ text: 'படங்களை ஏற்ற முடியவில்லை. Supabase Storage அமைப்பைச் சரிபார்க்கவும்.', tone: 'error' })
+      })
+    return () => { active = false }
+  }, [records, draft.customerPhoto, draft.productImage])
+
   const filteredRecords = useMemo(() => {
     const term = search.trim().toLocaleLowerCase()
     const dateToday = today()
@@ -306,6 +332,7 @@ function App() {
   const monthlyInterest = (Number(draft.principal) * Number(draft.rate)) / 1200
 
   const showToast = (text: string, tone: Toast['tone'] = 'info'): void => setToast({ text, tone })
+  const photoSource = (photo: string): string => isDataPhoto(photo) ? photo : photoUrls[photo] ?? ''
   const updateDraft = (key: keyof PawnDraft, value: string): void =>
     setDraft(current => ({ ...current, [key]: value }))
 
@@ -331,8 +358,8 @@ function App() {
     const file = input.files?.[0]
     input.value = ''
     if (!file) return
-    if (file.size >= 20 * 1024) {
-      showToast('படத்தின் அளவு 20 KB-க்கு குறைவாக இருக்க வேண்டும்.', 'error')
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('படத்தின் அளவு 5 MB-க்குள் இருக்க வேண்டும்.', 'error')
       return
     }
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
@@ -422,22 +449,63 @@ function App() {
       updatedAt: new Date().toISOString(),
     }
     setSaving(true)
+    const uploadedPhotoPaths: string[] = []
     try {
-      await savePawnRecords(record)
+      const persistPhoto = async (
+        photo: string | null,
+        kind: 'customer' | 'product',
+      ): Promise<string | null> => {
+        if (!photo || !isDataPhoto(photo)) return photo
+        const path = await uploadPawnPhoto(record.id, receiptNo, kind, photo)
+        uploadedPhotoPaths.push(path)
+        return path
+      }
+      const savedRecord: PawnRecord = {
+        ...record,
+        customerPhoto: await persistPhoto(record.customerPhoto, 'customer'),
+        productImage: await persistPhoto(record.productImage, 'product'),
+      }
+      const photoPaths = [savedRecord.customerPhoto, savedRecord.productImage]
+        .filter((path): path is string => typeof path === 'string' && path.length > 0 && !isDataPhoto(path))
+      const signedPhotoUrls = await Promise.all(photoPaths.map(async path => [path, await getPawnPhotoUrl(path)] as const))
+      await savePawnRecords(savedRecord)
+      setPhotoUrls(Object.fromEntries(signedPhotoUrls))
       const nextRecords = existing
-        ? records.map(item => item.id === record.id ? record : item)
-        : [record, ...records]
+        ? records.map(item => item.id === savedRecord.id ? savedRecord : item)
+        : [savedRecord, ...records]
       setRecords(nextRecords)
       setEditingId(null)
-      showToast(`ரசீது ${receiptNo} சேமிக்கப்பட்டது.`, 'success')
+      const currentPhotoPaths = new Set(photoPaths)
+      const replacedPhotoPaths = [existing?.customerPhoto, existing?.productImage]
+        .filter((path): path is string => typeof path === 'string' && path.length > 0 && !isDataPhoto(path))
+        .filter(path => !currentPhotoPaths.has(path))
+      let cleanupFailed = false
+      try {
+        await removePawnPhotos(replacedPhotoPaths)
+      } catch (error) {
+        cleanupFailed = true
+        console.error('Replaced pawn photo cleanup failed:', error)
+      }
+      showToast(
+        cleanupFailed
+          ? `ரசீது ${receiptNo} சேமிக்கப்பட்டது; பழைய படத்தை Storage-ல் நீக்க முடியவில்லை.`
+          : `ரசீது ${receiptNo} சேமிக்கப்பட்டது.`,
+        cleanupFailed ? 'error' : 'success',
+      )
       if (saveAction.current === 'print') {
+        setDraft(toDraft(savedRecord))
         window.setTimeout(() => window.print(), 180)
       } else {
         setDraft(initialDraft(nextRecords))
       }
     } catch (error) {
       console.error('Pawn receipt save failed:', error)
-      showToast('சேமிக்க முடியவில்லை. இணைப்பு / Supabase அமைப்பைச் சரிபார்க்கவும்.', 'error')
+      try {
+        await removePawnPhotos(uploadedPhotoPaths)
+      } catch (cleanupError) {
+        console.error('Uncommitted pawn photo cleanup failed:', cleanupError)
+      }
+      showToast('சேமிக்க முடியவில்லை. இணைப்பு / Supabase Storage அமைப்பைச் சரிபார்க்கவும்.', 'error')
     } finally {
       setSaving(false)
     }
@@ -482,20 +550,43 @@ function App() {
     if (!window.confirm(`ரசீது ${record.receiptNo} பதிவை நிரந்தரமாக நீக்கவா?`)) return
     try {
       await removePawnRecord(record.id)
+      const photoPaths = [record.customerPhoto, record.productImage]
+        .filter((path): path is string => typeof path === 'string' && path.length > 0 && !isDataPhoto(path))
+      let cleanupFailed = false
+      try {
+        await removePawnPhotos(photoPaths)
+      } catch (error) {
+        cleanupFailed = true
+        console.error('Deleted pawn photo cleanup failed:', error)
+      }
       setRecords(current => current.filter(item => item.id !== record.id))
-      showToast(`ரசீது ${record.receiptNo} நீக்கப்பட்டது.`, 'info')
+      showToast(
+        cleanupFailed
+          ? `ரசீது ${record.receiptNo} நீக்கப்பட்டது; Storage படங்களை நீக்க முடியவில்லை.`
+          : `ரசீது ${record.receiptNo} நீக்கப்பட்டது.`,
+        cleanupFailed ? 'error' : 'info',
+      )
     } catch (error) {
       console.error('Pawn receipt delete failed:', error)
       showToast('நீக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.', 'error')
     }
   }
 
-  function printSavedRecord(record: PawnRecord): void {
-    setDraft(toDraft(record))
-    setEditingId(null)
-    setShowDualCopy(false)
-    setPane('new')
-    window.setTimeout(() => window.print(), 180)
+  async function printSavedRecord(record: PawnRecord): Promise<void> {
+    try {
+      const photoPaths = [record.customerPhoto, record.productImage]
+        .filter((path): path is string => typeof path === 'string' && path.length > 0 && !isDataPhoto(path))
+      const photoEntries = await Promise.all(photoPaths.map(async path => [path, await getPawnPhotoUrl(path)] as const))
+      setPhotoUrls(Object.fromEntries(photoEntries))
+      setDraft(toDraft(record))
+      setEditingId(null)
+      setShowDualCopy(false)
+      setPane('new')
+      window.setTimeout(() => window.print(), 180)
+    } catch (error) {
+      console.error('Saved receipt photo load failed:', error)
+      showToast('ரசீது படங்களை ஏற்ற முடியவில்லை; Storage அமைப்பைச் சரிபார்க்கவும்.', 'error')
+    }
   }
 
   function shareWhatsApp(): void {
@@ -533,12 +624,26 @@ function App() {
     downloadFile(`Sri_Vasanthi_Ledger_${today()}.csv`, `\uFEFF${[headers.map(csvCell).join(','), ...lines].join('\n')}`, 'text/csv;charset=utf-8')
   }
 
-  function exportBackup(): void {
+  async function exportBackup(): Promise<void> {
     if (!records.length) {
       showToast('Backup செய்ய பதிவுகள் இல்லை.', 'error')
       return
     }
-    downloadFile(`Sri_Vasanthi_Backup_${today()}.json`, JSON.stringify(records, null, 2), 'application/json')
+    try {
+      const backupRecords = await Promise.all(records.map(async record => ({
+        ...record,
+        customerPhoto: record.customerPhoto && !isDataPhoto(record.customerPhoto)
+          ? await getPawnPhotoDataUrl(record.customerPhoto)
+          : record.customerPhoto,
+        productImage: record.productImage && !isDataPhoto(record.productImage)
+          ? await getPawnPhotoDataUrl(record.productImage)
+          : record.productImage,
+      })))
+      downloadFile(`Sri_Vasanthi_Backup_${today()}.json`, JSON.stringify(backupRecords, null, 2), 'application/json')
+    } catch (error) {
+      console.error('Pawn ledger backup failed:', error)
+      showToast('Backup படங்களைப் பதிவிறக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.', 'error')
+    }
   }
 
   async function restoreBackup(event: FormEvent<HTMLInputElement>): Promise<void> {
@@ -546,6 +651,7 @@ function App() {
     const file = input.files?.[0]
     if (!file) return
     setRestoreBusy(true)
+    const uploadedPhotoPaths: string[] = []
     try {
       const parsed: unknown = JSON.parse(await file.text())
       if (!Array.isArray(parsed)) throw new Error('Backup must contain an array')
@@ -557,11 +663,28 @@ function App() {
         receiptNumbers.add(record.receiptNo.toLowerCase())
         return true
       })
-      await savePawnRecords(additions)
-      setRecords(current => [...additions, ...current])
+      const restoredRecords: PawnRecord[] = []
+      for (const record of additions) {
+        const customerPhoto = record.customerPhoto && isDataPhoto(record.customerPhoto)
+          ? await uploadPawnPhoto(record.id, record.receiptNo, 'customer', record.customerPhoto)
+          : record.customerPhoto
+        if (customerPhoto && customerPhoto !== record.customerPhoto) uploadedPhotoPaths.push(customerPhoto)
+        const productImage = record.productImage && isDataPhoto(record.productImage)
+          ? await uploadPawnPhoto(record.id, record.receiptNo, 'product', record.productImage)
+          : record.productImage
+        if (productImage && productImage !== record.productImage) uploadedPhotoPaths.push(productImage)
+        restoredRecords.push({ ...record, customerPhoto, productImage })
+      }
+      await savePawnRecords(restoredRecords)
+      setRecords(current => [...restoredRecords, ...current])
       showToast(`${additions.length} புதிய பதிவுகள் மீட்டெடுக்கப்பட்டன.`, 'success')
     } catch (error) {
       console.error('Backup restore failed:', error)
+      try {
+        await removePawnPhotos(uploadedPhotoPaths)
+      } catch (cleanupError) {
+        console.error('Uncommitted restored photo cleanup failed:', cleanupError)
+      }
       showToast('Backup கோப்பை படிக்க / சேமிக்க முடியவில்லை.', 'error')
     } finally {
       setRestoreBusy(false)
@@ -691,6 +814,7 @@ function App() {
                 <ImageUploadField
                   label="வாடிக்கையாளர் புகைப்படம்"
                   image={draft.customerPhoto}
+                  imageUrl={photoSource(draft.customerPhoto)}
                   capture="environment"
                   onChange={event => void handleImageUpload('customerPhoto', event)}
                   onCaptured={image => updateDraft('customerPhoto', image)}
@@ -699,6 +823,7 @@ function App() {
                 <ImageUploadField
                   label="அடகு பொருள் படம்"
                   image={draft.productImage}
+                  imageUrl={photoSource(draft.productImage)}
                   capture="environment"
                   onChange={event => void handleImageUpload('productImage', event)}
                   onCaptured={image => updateDraft('productImage', image)}
@@ -738,7 +863,7 @@ function App() {
                 <button className="button button-soft" onClick={shareWhatsApp}><span className="whatsapp-mark">◉</span> WhatsApp</button>
                 <button className="button button-soft" onClick={() => window.print()}><Printer size={16} /> அச்சிடு</button>
               </div>
-              <ReceiptCard draft={draft} dual={showDualCopy} />
+              <ReceiptCard draft={draft} dual={showDualCopy} resolvePhoto={photoSource} />
             </div>
           </section>
         ) : (
@@ -846,6 +971,7 @@ function Field({ label, required, children }: { label: string; required?: boolea
 function ImageUploadField({
   label,
   image,
+  imageUrl,
   capture,
   onChange,
   onCaptured,
@@ -853,6 +979,7 @@ function ImageUploadField({
 }: {
   label: string
   image: string
+  imageUrl: string
   capture: 'user' | 'environment'
   onChange: (event: ChangeEvent<HTMLInputElement>) => void
   onCaptured: (image: string) => void
@@ -909,7 +1036,7 @@ function ImageUploadField({
       setCameraOpen(false)
     } catch (error) {
       console.error('Camera capture failed:', error)
-      setCameraError('படத்தை 20 KB-க்கு குறைவாக சுருக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.')
+      setCameraError('படத்தை 512 KB-க்குள் சுருக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.')
     }
   }
 
@@ -919,11 +1046,11 @@ function ImageUploadField({
         <button type="button" className="button button-camera" onClick={() => setCameraOpen(true)}>
           <Camera size={16} /> படம் எடுக்க
         </button>
-        <small className="image-help">பின்பக்க camera · JPG, PNG அல்லது WebP · 20 KB-க்கு குறைவு</small>
+        <small className="image-help">பின்பக்க camera · JPG, PNG அல்லது WebP · அதிகபட்சம் 5 MB</small>
         <input type="file" accept="image/jpeg,image/png,image/webp" capture={capture} onChange={onChange} />
         {image && (
           <div className="image-preview">
-            <img src={image} alt={label} />
+            {imageUrl && <img src={imageUrl} alt={label} />}
             <button type="button" className="button button-quiet" onClick={onRemove}>படத்தை நீக்கு</button>
           </div>
         )}
@@ -954,7 +1081,15 @@ function StatCard({ label, value, hint, icon, color }: { label: string; value: s
   return <article className={`stat-card stat-${color}`}><div className="stat-copy"><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div><div className="stat-icon">{icon}</div></article>
 }
 
-function ReceiptCard({ draft, dual }: { draft: PawnDraft; dual: boolean }) {
+function ReceiptCard({
+  draft,
+  dual,
+  resolvePhoto,
+}: {
+  draft: PawnDraft
+  dual: boolean
+  resolvePhoto: (photo: string) => string
+}) {
   const copy = (label: string) => (
     <article className="receipt-sheet" key={label}>
       <div className="receipt-frame">
@@ -975,6 +1110,22 @@ function ReceiptCard({ draft, dual }: { draft: PawnDraft; dual: boolean }) {
         <div className="receipt-items"><div><small>அடகு பொருள் விவரம்</small><p>{draft.items || '—'}</p></div><table><tbody><tr><th>கிலோ</th><th>கிராம்</th><th>மி.கி.</th></tr><tr><td>{draft.wtKg || '0'}</td><td>{draft.wtGm || '0'}</td><td>{draft.wtMg || '000'}</td></tr></tbody></table></div>
         <div className="receipt-bottom"><span>சுமார் மதிப்பு: <b>{draft.approxVal ? `₹ ${formatMoney(draft.approxVal)}` : '________________'}</b></span><span>மீட்க ஒப்புக்கொண்ட தேதி: <b>{formatDate(draft.dueDate)}</b></span></div>
         <div className="receipt-contact"><span>மாத வருமானம்: <b>{draft.income ? `₹ ${formatMoney(draft.income)}` : '__________'}</b></span><span>செல் எண்: <b>{draft.phone || '________________'}</b></span></div>
+        {(draft.customerPhoto || draft.productImage) && (
+          <div className="receipt-photos">
+            {draft.customerPhoto && resolvePhoto(draft.customerPhoto) && (
+              <figure>
+                <img src={resolvePhoto(draft.customerPhoto)} alt="வாடிக்கையாளர் புகைப்படம்" />
+                <figcaption>வாடிக்கையாளர் புகைப்படம்</figcaption>
+              </figure>
+            )}
+            {draft.productImage && resolvePhoto(draft.productImage) && (
+              <figure>
+                <img src={resolvePhoto(draft.productImage)} alt="அடகு பொருள் படம்" />
+                <figcaption>அடகு பொருள் படம்</figcaption>
+              </figure>
+            )}
+          </div>
+        )}
         <div className="receipt-signatures"><span>அடகு வைத்தவர் கையெழுத்து</span><span>அடகு பிடிப்பவர் கையெழுத்து</span></div>
         <footer>குறிப்பு: இந்த சீட்டை பத்திரமாக பாதுகாப்பாக வைத்துக் கொள்ளவும்.</footer>
       </div>

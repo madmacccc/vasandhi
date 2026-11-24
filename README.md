@@ -6,7 +6,7 @@ Browser-based billing and pawn-ledger app built with React 19, TypeScript and Vi
 
 1. Install Node.js 22.12 or later and run `npm install`.
 2. In Supabase Dashboard, enable **Authentication → Providers → Email**, require email confirmation, and disable public sign-ups. Create or invite the shop admin in **Authentication → Users** and confirm the admin email.
-3. In [supabase-setup.sql](./supabase-setup.sql), replace the admin email in the RLS policies with the exact admin email and run the SQL in Supabase SQL Editor. The script adds separate columns for every pawn-record field, backfills existing records from `record_data`, and creates the private `pawn-photos` bucket with admin-only access.
+3. In [supabase-setup.sql](./supabase-setup.sql), set the admin email in the RLS policies to the same address used for `VITE_ADMIN_EMAIL`, then run the SQL in Supabase SQL Editor. If saving fails with `42501`, check that those values match the signed-in Supabase user's email and rerun the SQL. The script adds separate columns for every pawn-record field, backfills existing records from `record_data`, and creates the private `pawn-photos` bucket with admin-only access.
 4. Copy [.env.example](./.env.example) to `.env.local` and fill in the Supabase Project URL, Supabase anon/publishable key, and the same admin email. Never put the Supabase service-role key in the app.
 5. Start the app with `npm run dev`. Open the forwarded port **5173** in your browser (Codespaces will show an **Open in Browser** prompt).
 

@@ -79,31 +79,31 @@ drop policy if exists "Admin can read pawn records" on public.pawn_records;
 create policy "Admin can read pawn records"
     on public.pawn_records for select to authenticated
     using (
-        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     );
 
 drop policy if exists "Admin can insert pawn records" on public.pawn_records;
 create policy "Admin can insert pawn records"
     on public.pawn_records for insert to authenticated
     with check (
-        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     );
 
 drop policy if exists "Admin can update pawn records" on public.pawn_records;
 create policy "Admin can update pawn records"
     on public.pawn_records for update to authenticated
     using (
-        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     )
     with check (
-        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     );
 
 drop policy if exists "Admin can delete pawn records" on public.pawn_records;
 create policy "Admin can delete pawn records"
     on public.pawn_records for delete to authenticated
     using (
-        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     );
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -124,7 +124,7 @@ create policy "Admin can read pawn photos"
     on storage.objects for select to authenticated
     using (
         bucket_id = 'pawn-photos'
-        and lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        and lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     );
 
 drop policy if exists "Admin can upload pawn photos" on storage.objects;
@@ -132,7 +132,7 @@ create policy "Admin can upload pawn photos"
     on storage.objects for insert to authenticated
     with check (
         bucket_id = 'pawn-photos'
-        and lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        and lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     );
 
 drop policy if exists "Admin can delete pawn photos" on storage.objects;
@@ -140,5 +140,5 @@ create policy "Admin can delete pawn photos"
     on storage.objects for delete to authenticated
     using (
         bucket_id = 'pawn-photos'
-        and lower(coalesce(auth.jwt() ->> 'email', '')) = lower('REPLACE_WITH_ADMIN_EMAIL')
+        and lower(coalesce(auth.jwt() ->> 'email', '')) = lower('madmac3214@gmail.com')
     );

@@ -18,11 +18,11 @@ const today = (): string => {
 }
 
 function describeError(error: unknown): string {
-  if (error instanceof Error) return error.message
   if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
     const code = 'code' in error && typeof error.code === 'string' ? ` (${error.code})` : ''
     return `${error.message}${code}`
   }
+  if (error instanceof Error) return error.message
   return 'Unknown error'
 }
 
@@ -505,7 +505,10 @@ function App() {
       } catch (cleanupError) {
         console.error('Uncommitted pawn photo cleanup failed:', cleanupError)
       }
-      showToast('சேமிக்க முடியவில்லை. இணைப்பு / Supabase Storage அமைப்பைச் சரிபார்க்கவும்.', 'error')
+      const permissionHint = hasErrorCode(error, '42501')
+        ? ' Supabase RLS அனுமதியை மறுத்தது. supabase-setup.sql-இல் உள்ள நிர்வாக மின்னஞ்சலும் VITE_ADMIN_EMAIL-உம் பொருந்துகிறதா எனச் சரிபார்த்து SQL-ஐ மீண்டும் இயக்கவும்.'
+        : ''
+      showToast(`சேமிக்க முடியவில்லை:${permissionHint} ${describeError(error)}`, 'error')
     } finally {
       setSaving(false)
     }

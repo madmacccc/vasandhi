@@ -1,0 +1,28 @@
+{
+  "id": "./",
+  "name": "ஸ்ரீ வசந்தி நகை அடகு கடை",
+  "short_name": "வசந்தி அடகு",
+  "description": "அடகு சீட்டு மற்றும் பதிவேட்டு செயலி",
+  "lang": "ta",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#FEF9C3",
+  "theme_color": "#F59E0B",
+  "icons": [
+    {
+      "src": "./icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

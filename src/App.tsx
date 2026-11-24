@@ -1,697 +1,995 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import {
-  Archive, Check, ChevronDown, CircleDollarSign, FileClock, Gem, Languages,
-  Pencil, Plus, Printer, RotateCcw, Search, ShieldCheck, Trash2, Users, WalletCards,
-} from "lucide-react";
-import ReceiptPrint from "./components/ReceiptPrint";
-import SignaturePad from "./components/SignaturePad";
+  Archive, ArrowDownToLine, BookOpen, Camera, Check, ChevronDown, CircleAlert, Coins, Download, FilePlus2,
+  FileSpreadsheet, Gem, HandCoins, LockKeyhole, LogOut, Printer, RotateCcw, Search,
+  ShieldCheck, Trash2, Upload, UserRound, Wallet, Weight, X,
+} from 'lucide-react'
+import type { User } from '@supabase/supabase-js'
 import {
-  createId, deleteTicket, loadLedger, restoreLedger, savePawnRecord,
-  savePayment, updatePawnRecord,
-} from "./services/database";
-import {
-  sendPasswordReset, signIn, signOut, subscribeToAuthChanges,
-} from "./services/auth";
-import type { User } from "@firebase/auth";
-import AuthGate from "./components/AuthGate";
-import { decryptSignature, encryptSignature } from "./services/signature";
-import { translate as t } from "./translations";
-import type { Customer, Language, LedgerData, Payment, PaymentMethod, PawnTicket } from "./types";
-import { localDateKey } from "./utils/date";
-import { formatMoney, netWeight, ticketBalance } from "./utils/finance";
+  adminEmail, listPawnRecords, removePawnRecord, savePawnRecords, supabase, supabaseConfigured,
+} from './lib/supabase'
+import type { PawnDraft, PawnRecord } from './types'
+import './App.css'
 
-type Draft = {
-  customerName: string;
-  customerAddress: string;
-  mobile: string;
-  jewelleryType: string;
-  purity: PawnTicket["purity"];
-  kilograms: string;
-  grams: string;
-  milligrams: string;
-  loan: string;
-  rate: string;
-  pawnDate: string;
-  maturityDate: string;
-  approximateValue: string;
-  monthlyIncome: string;
-  notes: string;
-};
+const today = (): string => {
+  const date = new Date()
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
 
-const today = () => localDateKey(new Date());
-const dateAfterDays = (days: number) => {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return localDateKey(date);
-};
-const emptyLedger: LedgerData = {
-  customers: [], tickets: [], payments: [],
-  settings: { name: "Sri Vasanthi Jewellery Pawn Broker", defaultRateBps: 1600, interestMethod: "daily", dayCountBasis: 365, currency: "INR" },
-};
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
+    const code = 'code' in error && typeof error.code === 'string' ? ` (${error.code})` : ''
+    return `${error.message}${code}`
+  }
+  return 'Unknown error'
+}
 
-function blankDraft(rateBps = 1600): Draft {
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code
+}
+
+const formatDate = (date: string): string => {
+  if (!date) return '—'
+  const [year, month, day] = date.split('-')
+  return `${day}-${month}-${year}`
+}
+
+const formatMoney = (value: number | string): string =>
+  Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })
+
+function readImageAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('Could not read image file'))
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read image file'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (blob) resolve(blob)
+      else reject(new Error('Could not encode captured photo'))
+    }, 'image/jpeg', quality)
+  })
+}
+
+async function captureVideoFrame(video: HTMLVideoElement): Promise<string> {
+  const maxDimension = Math.max(video.videoWidth, video.videoHeight)
+  if (!maxDimension) throw new Error('Camera preview is not ready')
+  const canvas = document.createElement('canvas')
+  for (const scale of [1, 0.8, 0.65, 0.5, 0.4, 0.3]) {
+    const width = Math.round(video.videoWidth * scale)
+    const height = Math.round(video.videoHeight * scale)
+    canvas.width = width
+    canvas.height = height
+    canvas.getContext('2d')?.drawImage(video, 0, 0, width, height)
+    for (const quality of [0.75, 0.6, 0.45, 0.3]) {
+      const blob = await canvasToBlob(canvas, quality)
+      if (blob.size < 20 * 1024) {
+        return readImageAsDataUrl(new File([blob], 'camera-photo.jpg', { type: 'image/jpeg' }))
+      }
+    }
+  }
+  throw new Error('Captured photo could not be reduced below 20 KB')
+}
+
+const initialDraft = (records: PawnRecord[] = []): PawnDraft => {
+  const nextNumber = records.reduce((max, record) => {
+    const match = record.receiptNo.match(/(\d+)$/)
+    return match ? Math.max(max, Number(match[1])) : max
+  }, 1000) + 1
+  const pawnDate = today()
+  const due = new Date(`${pawnDate}T00:00:00`)
+  due.setFullYear(due.getFullYear() + 1)
   return {
-    customerName: "", customerAddress: "", mobile: "", jewelleryType: "", purity: "22K",
-    kilograms: "0", grams: "", milligrams: "0", loan: "", rate: String(rateBps / 100),
-    pawnDate: today(), maturityDate: dateAfterDays(90), approximateValue: "",
-    monthlyIncome: "", notes: "",
-  };
+    receiptNo: `SV-${nextNumber}`,
+    pawnDate,
+    principal: '',
+    rate: '16',
+    customer: '',
+    aadhaarNumber: '',
+    phone: '',
+    income: '',
+    items: '',
+    customerPhoto: '',
+    productImage: '',
+    wtKg: '0',
+    wtGm: '0',
+    wtMg: '000',
+    approxVal: '',
+    dueDate: `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`,
+  }
 }
 
-function receiptSequence(tickets: PawnTicket[]) {
-  const last = tickets.reduce((max, ticket) => {
-    const match = /^SV-(\d+)$/i.exec(ticket.receiptNo);
-    return match ? Math.max(max, Number(match[1])) : max;
-  }, 1000);
-  return `SV-${last + 1}`;
+const toDraft = (record: PawnRecord): PawnDraft => ({
+  receiptNo: record.receiptNo,
+  pawnDate: record.pawnDate,
+  principal: String(record.principal),
+  rate: String(record.rate),
+  customer: record.customer,
+  aadhaarNumber: record.aadhaarNumber ?? '',
+  phone: record.phone,
+  income: record.income,
+  items: record.items,
+  customerPhoto: record.customerPhoto ?? '',
+  productImage: record.productImage ?? '',
+  wtKg: record.wtKg,
+  wtGm: record.wtGm,
+  wtMg: record.wtMg,
+  approxVal: record.approxVal,
+  dueDate: record.dueDate,
+})
+
+const numberToTamilWords = (input: number): string => {
+  const ones = ['', 'ஒன்று', 'இரண்டு', 'மூன்று', 'நான்கு', 'ஐந்து', 'ஆறு', 'ஏழு', 'எட்டு', 'ஒன்பது', 'பத்து', 'பதினொன்று', 'பன்னிரண்டு', 'பதின்மூன்று', 'பதினான்கு', 'பதினைந்து', 'பதினாறு', 'பதினேழு', 'பதினெட்டு', 'பத்தொன்பது']
+  const tens = ['', '', 'இருபது', 'முப்பது', 'நாற்பது', 'ஐம்பது', 'அறுபது', 'எழுபது', 'எண்பது', 'தொண்ணூறு']
+  const tensPrefix = ['', '', 'இருபத்து', 'முப்பத்து', 'நாற்பத்து', 'ஐம்பத்து', 'அறுபத்து', 'எழுபத்து', 'எண்பத்து', 'தொண்ணூற்று']
+  const twoDigits = (number: number): string => {
+    if (!number) return ''
+    if (number < 20) return ones[number]
+    return number % 10 ? `${tensPrefix[Math.floor(number / 10)]} ${ones[number % 10]}` : tens[Math.floor(number / 10)]
+  }
+  const threeDigits = (number: number): string => {
+    const hundreds = Math.floor(number / 100)
+    const rest = number % 100
+    const hundredNames = ['', 'நூறு', 'இருநூறு', 'முன்னூறு', 'நானூறு', 'ஐந்நூறு', 'அறுநூறு', 'எழுநூறு', 'எண்ணூறு', 'தொள்ளாயிரம்']
+    const hundredPrefixes = ['', 'நூற்று', 'இருநூற்று', 'முன்னூற்று', 'நானூற்று', 'ஐந்நூற்று', 'அறுநூற்று', 'எழுநூற்று', 'எண்ணூற்று', 'தொள்ளாயிரத்து']
+    if (!hundreds) return twoDigits(rest)
+    return rest ? `${hundredPrefixes[hundreds]} ${twoDigits(rest)}` : hundredNames[hundreds]
+  }
+  let number = Math.floor(input)
+  if (number <= 0 || number > 999999999) return ''
+  const groups = [
+    { value: Math.floor(number / 10000000), suffix: ' கோடி' },
+    { value: Math.floor((number % 10000000) / 100000), suffix: ' லட்சத்து' },
+    { value: Math.floor((number % 100000) / 1000), suffix: ' ஆயிரத்து' },
+  ]
+  const words = groups.flatMap(group => group.value ? [`${twoDigits(group.value)}${group.suffix}`] : [])
+  number %= 1000
+  if (number) words.push(threeDigits(number))
+  const result = words.join(' ').replace(/லட்சத்து$/, 'லட்சம்').replace(/ஆயிரத்து$/, 'ஆயிரம்')
+  return `(ரூபாய் ${result} மட்டும்)`
 }
 
-function weightToGrams(draft: Draft) {
-  return Number(draft.kilograms || 0) * 1000 +
-    Number(draft.grams || 0) + Number(draft.milligrams || 0) / 1000;
+function isPawnRecord(value: unknown): value is PawnRecord {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<PawnRecord>
+  return typeof record.id === 'string' &&
+    typeof record.receiptNo === 'string' &&
+    typeof record.pawnDate === 'string' &&
+    typeof record.principal === 'number' &&
+    typeof record.customer === 'string' &&
+    typeof record.phone === 'string' &&
+    typeof record.items === 'string' &&
+    (record.status === 'ACTIVE' || record.status === 'REDEEMED')
 }
 
-function validateBackup(value: unknown): value is LedgerData {
-  if (!value || typeof value !== "object") return false;
-  const data = value as Partial<LedgerData>;
-  return Array.isArray(data.customers) && Array.isArray(data.tickets) &&
-    Array.isArray(data.payments) && !!data.settings &&
-    data.customers.every((item) => item && typeof item.id === "string" &&
-      typeof item.customerNo === "string" && typeof item.name === "string" &&
-      typeof item.mobile === "string" && typeof item.address === "string") &&
-    data.tickets.every((item) => item && typeof item.id === "string" &&
-      typeof item.receiptNo === "string" && typeof item.customerId === "string" &&
-      ["24K", "22K", "20K", "18K"].includes(item.purity) &&
-      ["active", "redeemed"].includes(item.status)) &&
-    data.payments.every((item) => item && typeof item.id === "string" &&
-      typeof item.transactionNo === "string" && typeof item.ticketId === "string") &&
-    typeof data.settings.name === "string" &&
-    ["daily", "monthly", "annual"].includes(data.settings.interestMethod);
+type Pane = 'new' | 'records'
+type Toast = { text: string; tone: 'success' | 'error' | 'info' }
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
 }
 
 function App() {
-  const [language, setLanguage] = useState<Language>("ta");
-  const [ledger, setLedger] = useState<LedgerData>(emptyLedger);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [authBusy, setAuthBusy] = useState(true);
-  const [authError, setAuthError] = useState("");
-  const [activeTab, setActiveTab] = useState<"new" | "ledger">("new");
-  const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "redeemed">("all");
-  const [draft, setDraft] = useState<Draft>(() => blankDraft());
-  const [signatureData, setSignatureData] = useState("");
-  const [signatureConsent, setSignatureConsent] = useState(false);
-  const [signatureKey, setSignatureKey] = useState(0);
-  const [editingTicketId, setEditingTicketId] = useState("");
-  const [selectedTicketId, setSelectedTicketId] = useState("");
-  const [paymentDialog, setPaymentDialog] = useState<"payment" | "redeem" | "history" | null>(null);
-  const [printTicketId, setPrintTicketId] = useState("");
-  const [printSignature, setPrintSignature] = useState("");
-  const fileInput = useRef<HTMLInputElement>(null);
-  const tr = (key: Parameters<typeof t>[1]) => t(language, key);
-
-  async function refresh(showLoading = true) {
-    if (showLoading) setLoading(true);
-    try {
-      setLedger(await loadLedger());
-      setError("");
-      return true;
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : tr("dataError"));
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function connectLocal(nextUser: User | null) {
-    setFirebaseUser(nextUser);
-    setAuthError("");
-    setAuthBusy(false);
-  }
-
-  async function syncNow() {
-    await refresh(false);
-  }
-
-  async function handleSignIn(email: string, password: string) {
-    setAuthBusy(true);
-    setAuthError("");
-    try {
-      await signIn(email, password);
-    } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : "Sign-in failed.");
-      throw reason;
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  async function handleSignOut() {
-    setAuthBusy(true);
-    try {
-      await signOut();
-      setFirebaseUser(null);
-    } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : "Sign-out failed.");
-    } finally {
-      setAuthBusy(false);
-    }
-  }
+  const [user, setUser] = useState<User | null>(null)
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [records, setRecords] = useState<PawnRecord[]>([])
+  const [dataLoading, setDataLoading] = useState(false)
+  const [dataError, setDataError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+  const [pane, setPane] = useState<Pane>('new')
+  const [draft, setDraft] = useState<PawnDraft>(() => initialDraft())
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [toast, setToast] = useState<Toast | null>(null)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('ALL')
+  const [showDualCopy, setShowDualCopy] = useState(false)
+  const [redeemRecord, setRedeemRecord] = useState<PawnRecord | null>(null)
+  const [redeemInterest, setRedeemInterest] = useState('')
+  const [restoreBusy, setRestoreBusy] = useState(false)
+  const restoreInput = useRef<HTMLInputElement>(null)
+  const saveAction = useRef<'save' | 'print'>('save')
 
   useEffect(() => {
-    void refresh();
-    const unsubscribe = subscribeToAuthChanges((nextUser, authFailure) => {
-      if (authFailure) {
-        setAuthError(authFailure.message);
-        setAuthBusy(false);
-        return;
-      }
-      connectLocal(nextUser);
-    });
-    const handleOnline = () => void syncNow();
-    window.addEventListener("online", handleOnline);
+    const handleInstallAvailable = (event: Event): void => {
+      event.preventDefault()
+      setInstallPrompt(event as BeforeInstallPromptEvent)
+    }
+    const handleInstalled = (): void => setInstallPrompt(null)
+    window.addEventListener('beforeinstallprompt', handleInstallAvailable)
+    window.addEventListener('appinstalled', handleInstalled)
     return () => {
-      unsubscribe();
-      window.removeEventListener("online", handleOnline);
-    };
-  }, []);
-
-  function notify(message: string) {
-    setNotice(message);
-    window.setTimeout(() => setNotice(""), 3200);
-  }
-
-  const activeTickets = ledger.tickets.filter((ticket) => ticket.status === "active");
-  const redeemedTickets = ledger.tickets.filter((ticket) => ticket.status === "redeemed");
-  const activePrincipal = activeTickets.reduce((sum, ticket) => sum + ticketBalance(
-    ticket, ledger.payments, today(), ledger.settings.interestMethod, ledger.settings.dayCountBasis,
-  ).principalPaise, 0);
-  const redeemedPrincipal = redeemedTickets.reduce((sum, ticket) => sum + ticket.loanPaise, 0);
-  const filteredTickets = useMemo(() => ledger.tickets.filter((ticket) => {
-    const customer = ledger.customers.find((entry) => entry.id === ticket.customerId);
-    const matchesText = `${ticket.receiptNo} ${customer?.name ?? ""} ${customer?.mobile ?? ""}`
-      .toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    return matchesText && (statusFilter === "all" || ticket.status === statusFilter);
-  }), [ledger, query, statusFilter]);
-  const selectedTicket = ledger.tickets.find((ticket) => ticket.id === selectedTicketId);
-  const selectedCustomer = selectedTicket && ledger.customers.find((customer) => customer.id === selectedTicket.customerId);
-  const selectedBalance = selectedTicket ? ticketBalance(
-    selectedTicket, ledger.payments, today(), ledger.settings.interestMethod, ledger.settings.dayCountBasis,
-  ) : undefined;
-  const printTicket = ledger.tickets.find((ticket) => ticket.id === printTicketId);
-  const printCustomer = printTicket && ledger.customers.find((customer) => customer.id === printTicket.customerId);
-  const previewWeight = Number.isFinite(weightToGrams(draft)) ? weightToGrams(draft) : 0;
-  const draftReceiptNo = editingTicketId
-    ? ledger.tickets.find((ticket) => ticket.id === editingTicketId)?.receiptNo ?? receiptSequence(ledger.tickets)
-    : receiptSequence(ledger.tickets);
-  const previewTicket: PawnTicket = {
-    id: editingTicketId || "preview",
-    receiptNo: draftReceiptNo,
-    customerId: editingTicketId ? ledger.tickets.find((ticket) => ticket.id === editingTicketId)?.customerId ?? "preview" : "preview",
-    jewelleryType: draft.jewelleryType,
-    purity: draft.purity,
-    grossWeight: previewWeight,
-    stoneWeight: 0,
-    loanPaise: Math.max(0, Math.round(Number(draft.loan || 0) * 100)),
-    annualRateBps: Math.max(0, Math.round(Number(draft.rate || 0) * 100)),
-    approximateValuePaise: Math.max(0, Math.round(Number(draft.approximateValue || 0) * 100)),
-    declaredMonthlyIncomePaise: Math.max(0, Math.round(Number(draft.monthlyIncome || 0) * 100)),
-    signatureCiphertext: null,
-    pawnDate: draft.pawnDate || today(),
-    maturityDate: draft.maturityDate || dateAfterDays(90),
-    notes: draft.notes,
-    status: "active",
-    createdAt: new Date().toISOString(),
-  };
-  const previewCustomer: Customer = {
-    id: "preview",
-    customerNo: "PREVIEW",
-    name: draft.customerName,
-    mobile: draft.mobile,
-    address: draft.customerAddress,
-    idReference: "",
-    createdAt: new Date().toISOString(),
-  };
-
-  function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
-    setDraft((current) => ({ ...current, [key]: value }));
-  }
-
-  function clearDraft() {
-    setDraft(blankDraft(ledger.settings.defaultRateBps));
-    setEditingTicketId("");
-    setSignatureData("");
-    setSignatureConsent(false);
-    setSignatureKey((key) => key + 1);
-  }
-
-  async function printReceipt(ticket: PawnTicket) {
-    try {
-      const signature = ticket.signatureCiphertext ? await decryptSignature(ticket.signatureCiphertext) : "";
-      setPrintSignature(signature);
-      setPrintTicketId(ticket.id);
-      window.setTimeout(() => window.print(), 120);
-    } catch (reason) {
-      notify(`${tr("printError")} ${reason instanceof Error ? reason.message : ""}`);
+      window.removeEventListener('beforeinstallprompt', handleInstallAvailable)
+      window.removeEventListener('appinstalled', handleInstalled)
     }
-  }
+  }, [])
 
-  async function editTicket(ticket: PawnTicket) {
-    const customer = ledger.customers.find((item) => item.id === ticket.customerId);
-    if (!customer || ticket.status !== "active") return;
-    let signature = "";
-    try {
-      if (ticket.signatureCiphertext) signature = await decryptSignature(ticket.signatureCiphertext);
-    } catch (reason) {
-      notify(`${tr("printError")} ${reason instanceof Error ? reason.message : ""}`);
-      return;
+  useEffect(() => {
+    const client = supabase
+    if (!client) {
+      setAuthReady(true)
+      return
     }
-    const weightMilli = Math.round(ticket.grossWeight * 1000);
-    setDraft({
-      customerName: customer.name,
-      customerAddress: customer.address,
-      mobile: customer.mobile,
-      jewelleryType: ticket.jewelleryType,
-      purity: ticket.purity,
-      kilograms: String(Math.floor(weightMilli / 1_000_000)),
-      grams: String(Math.floor((weightMilli % 1_000_000) / 1000)),
-      milligrams: String(weightMilli % 1000),
-      loan: (ticket.loanPaise / 100).toFixed(2),
-      rate: (ticket.annualRateBps / 100).toString(),
-      pawnDate: ticket.pawnDate,
-      maturityDate: ticket.maturityDate,
-      approximateValue: (ticket.approximateValuePaise / 100).toFixed(2),
-      monthlyIncome: (ticket.declaredMonthlyIncomePaise / 100).toFixed(2),
-      notes: ticket.notes,
-    });
-    setSignatureData(signature);
-    setSignatureConsent(Boolean(signature));
-    setEditingTicketId(ticket.id);
-    setSignatureKey((key) => key + 1);
-    setActiveTab("new");
-  }
-
-  async function submitPawn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const submitter = (event.nativeEvent as SubmitEvent).submitter;
-    const printAfterSave = submitter instanceof HTMLButtonElement && submitter.dataset.print === "true";
-    const customerName = draft.customerName.trim();
-    const customerAddress = draft.customerAddress.trim();
-    const grossWeight = weightToGrams(draft);
-    const loanPaise = Math.round(Number(draft.loan) * 100);
-    const rateBps = Math.round(Number(draft.rate) * 100);
-    const valuePaise = Math.round(Number(draft.approximateValue) * 100);
-    const incomePaise = Math.round(Number(draft.monthlyIncome) * 100);
-    if (!customerName || !draft.mobile.trim() || !draft.jewelleryType.trim() ||
-      !/^[6-9]\d{9}$/.test(draft.mobile.trim()) ||
-      !Number.isFinite(grossWeight) || grossWeight <= 0 ||
-      !Number.isSafeInteger(loanPaise) || loanPaise <= 0 ||
-      !Number.isSafeInteger(rateBps) || rateBps < 0 ||
-      !Number.isSafeInteger(valuePaise) || valuePaise < 0 ||
-      !Number.isSafeInteger(incomePaise) || incomePaise < 0) {
-      notify(!/^[6-9]\d{9}$/.test(draft.mobile.trim()) && draft.mobile.trim()
-        ? tr("invalidMobile") : tr("required"));
-      return;
-    }
-    try {
-      netWeight(grossWeight, 0);
-    } catch (reason) {
-      notify(reason instanceof Error ? reason.message : tr("saveFailed"));
-      return;
-    }
-    if (!draft.pawnDate || !draft.maturityDate || draft.maturityDate <= draft.pawnDate) {
-      notify(tr("futureDate"));
-      return;
-    }
-    if (!signatureData || !signatureConsent) {
-      notify(tr("signatureRequired"));
-      return;
-    }
-    let signatureCiphertext: string;
-    try {
-      signatureCiphertext = await encryptSignature(signatureData);
-    } catch (reason) {
-      notify(`${tr("signatureUnavailable")} ${reason instanceof Error ? reason.message : ""}`);
-      return;
-    }
-
-    const oldTicket = ledger.tickets.find((ticket) => ticket.id === editingTicketId);
-    let customer = oldTicket
-      ? ledger.customers.find((item) => item.id === oldTicket.customerId)
-      : ledger.customers.find((item) => item.mobile === draft.mobile.trim() &&
-        item.name.toLocaleLowerCase() === customerName.toLocaleLowerCase());
-    const createdAt = new Date().toISOString();
-    if (!customer) {
-      customer = {
-        id: createId(), customerNo: `CUS-${Date.now()}`, name: customerName,
-        mobile: draft.mobile.trim(), address: customerAddress, idReference: "", createdAt,
-      };
-    } else {
-      customer = { ...customer, name: customerName, mobile: draft.mobile.trim(), address: customerAddress };
-    }
-    const ticket: PawnTicket = {
-      id: oldTicket?.id ?? createId(),
-      receiptNo: oldTicket?.receiptNo ?? draftReceiptNo,
-      customerId: customer.id,
-      jewelleryType: draft.jewelleryType.trim(),
-      purity: draft.purity,
-      grossWeight,
-      stoneWeight: 0,
-      loanPaise,
-      annualRateBps: rateBps,
-      approximateValuePaise: valuePaise,
-      declaredMonthlyIncomePaise: incomePaise,
-      signatureCiphertext,
-      pawnDate: draft.pawnDate,
-      maturityDate: draft.maturityDate,
-      notes: draft.notes.trim(),
-      status: oldTicket?.status ?? "active",
-      createdAt: oldTicket?.createdAt ?? createdAt,
-    };
-    try {
-      if (oldTicket) await updatePawnRecord(customer, ticket);
-      else await savePawnRecord(customer, ticket, ledger.customers.some((item) => item.id === customer.id));
-      await refresh(false);
-      void syncNow();
-      setEditingTicketId("");
-      setSignatureData("");
-      setSignatureConsent(false);
-      setSignatureKey((key) => key + 1);
-      setDraft(blankDraft(ledger.settings.defaultRateBps));
-      notify(tr("ticketSuccess"));
-      if (printAfterSave) void printReceipt(ticket);
-    } catch (reason) {
-      notify(reason instanceof Error ? reason.message : tr("saveFailed"));
-    }
-  }
-
-  function openPayment(ticket: PawnTicket, mode: "payment" | "redeem" | "history") {
-    setSelectedTicketId(ticket.id);
-    setPaymentDialog(mode);
-  }
-
-  async function submitPayment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedTicket || !selectedBalance || !selectedCustomer) return;
-    const form = new FormData(event.currentTarget);
-    const amountPaise = Math.round(Number(form.get("amount")) * 100);
-    const redeem = paymentDialog === "redeem" || amountPaise === selectedBalance.totalPaise;
-    if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
-      notify(tr("required"));
-      return;
-    }
-    if (amountPaise > selectedBalance.totalPaise || (redeem && amountPaise !== selectedBalance.totalPaise)) {
-      notify(tr("amountTooHigh"));
-      return;
-    }
-    const interestPaise = Math.min(amountPaise, selectedBalance.interestPaise);
-    const payment: Payment = {
-      id: createId(),
-      transactionNo: `TXN-${Date.now()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
-      ticketId: selectedTicket.id,
-      amountPaise,
-      interestPaise,
-      principalPaise: amountPaise - interestPaise,
-      method: String(form.get("method")) as PaymentMethod,
-      paidAt: new Date().toISOString(),
-    };
-    try {
-      await savePayment(payment, redeem);
-      await refresh(false);
-      void syncNow();
-      setPaymentDialog(null);
-      notify(tr("paymentSuccess"));
-    } catch (reason) {
-      notify(reason instanceof Error ? reason.message : tr("saveFailed"));
-    }
-  }
-
-  async function removeTicket(ticket: PawnTicket) {
-    if (ticket.status !== "active" || !window.confirm(tr("confirmDelete"))) return;
-    try {
-      await deleteTicket(ticket.id);
-      await refresh(false);
-      void syncNow();
-      notify(tr("ticketDeleted"));
-    } catch (reason) {
-      notify(reason instanceof Error ? reason.message : tr("saveFailed"));
-    }
-  }
-
-  function exportBackup() {
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(new Blob(
-      [JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), ledger }, null, 2)],
-      { type: "application/json" },
-    ));
-    link.download = `vasanthi-ledger-${today()}.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    notify(tr("backupDownloaded"));
-  }
-
-  async function importBackup(file?: File) {
-    if (!file) return;
-    try {
-      const contents: unknown = JSON.parse(await file.text());
-      const wrapped = contents && typeof contents === "object" && "ledger" in contents
-        ? (contents as { ledger: unknown }).ledger
-        : contents;
-      if (!validateBackup(wrapped)) throw new Error(tr("invalidBackup"));
-      if (ledger.customers.length || ledger.tickets.length || ledger.payments.length) {
-        throw new Error(tr("restoreEmptyOnly"));
+    const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
+      const nextUser = session?.user ?? null
+      if (!nextUser) {
+        setUser(null)
+        setRecords([])
+        setDataError('')
+        setDataLoading(false)
+        setAuthReady(true)
+        return
       }
-      await restoreLedger(wrapped);
-      await refresh(false);
-      void syncNow();
-      notify(tr("restoreSuccess"));
-    } catch (reason) {
-      notify(reason instanceof Error ? reason.message : tr("invalidBackup"));
-    } finally {
-      if (fileInput.current) fileInput.current.value = "";
+      if ((nextUser.email ?? '').trim().toLowerCase() !== adminEmail.toLowerCase()) {
+        setUser(null)
+        setRecords([])
+        setDataLoading(false)
+        setAuthError('இந்த மின்னஞ்சலுக்கு நிர்வாகி அணுகல் இல்லை.')
+        setAuthReady(true)
+        window.setTimeout(() => {
+          void client.auth.signOut().then(({ error }) => {
+            if (error) throw error
+          }).catch(error => console.error('Non-admin sign out failed:', error))
+        }, 0)
+        return
+      }
+      setAuthError('')
+      setRecords([])
+      setDataLoading(true)
+      setUser(nextUser)
+      setAuthReady(true)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (!user) return
+    let active = true
+    setDataLoading(true)
+    setDataError('')
+    listPawnRecords()
+      .then(items => {
+        if (active) setRecords(items)
+      })
+      .catch(error => {
+        console.error('Supabase ledger load failed:', error)
+        if (active) {
+          const permissionHint = hasErrorCode(error, '42501')
+            ? ' authenticated role-க்கு pawn_records SELECT உரிமை உள்ளதா, admin email RLS policy-யுடன் பொருந்துகிறதா சரிபார்க்கவும். anon-க்கு அனுமதி வழங்க வேண்டாம்.'
+            : ''
+          setDataError(`Supabase-இல் இருந்து பதிவுகளை ஏற்ற முடியவில்லை.${permissionHint} (${describeError(error)})`)
+        }
+      })
+      .finally(() => {
+        if (active) setDataLoading(false)
+      })
+    return () => { active = false }
+  }, [user, reloadKey])
+
+  useEffect(() => {
+    if (!toast) return
+    const timer = window.setTimeout(() => setToast(null), 3600)
+    return () => window.clearTimeout(timer)
+  }, [toast])
+
+  const filteredRecords = useMemo(() => {
+    const term = search.trim().toLocaleLowerCase()
+    const dateToday = today()
+    return records.filter(record => {
+      const overdue = record.status === 'ACTIVE' && Boolean(record.dueDate) && record.dueDate < dateToday
+      const statusMatches = statusFilter === 'ALL' ||
+        (statusFilter === 'OVERDUE' ? overdue : record.status === statusFilter)
+      const searchMatches = !term || [
+        record.receiptNo, record.customer, record.phone, record.items,
+      ].some(value => value.toLocaleLowerCase().includes(term))
+      return statusMatches && searchMatches
+    })
+  }, [records, search, statusFilter])
+
+  const activeRecords = records.filter(record => record.status === 'ACTIVE')
+  const redeemedRecords = records.filter(record => record.status === 'REDEEMED')
+  const activePrincipal = activeRecords.reduce((sum, record) => sum + record.principal, 0)
+  const redeemedPrincipal = redeemedRecords.reduce((sum, record) => sum + record.principal, 0)
+  const totalInterest = redeemedRecords.reduce((sum, record) => sum + record.redeemedInterest, 0)
+  const monthlyInterest = (Number(draft.principal) * Number(draft.rate)) / 1200
+
+  const showToast = (text: string, tone: Toast['tone'] = 'info'): void => setToast({ text, tone })
+  const updateDraft = (key: keyof PawnDraft, value: string): void =>
+    setDraft(current => ({ ...current, [key]: value }))
+
+  async function installApp(): Promise<void> {
+    if (!installPrompt) {
+      showToast('Browser menu-ஐத் திறந்து Install app / Add to Home Screen என்பதைத் தேர்வு செய்யவும்.', 'info')
+      return
+    }
+    try {
+      const prompt = installPrompt
+      await prompt.prompt()
+      const choice = await prompt.userChoice
+      setInstallPrompt(null)
+      if (choice.outcome === 'accepted') showToast('App நிறுவப்பட்டது.', 'success')
+    } catch (error) {
+      console.error('PWA installation prompt failed:', error)
+      showToast('App நிறுவ முடியவில்லை. Browser menu-ல் முயற்சிக்கவும்.', 'error')
     }
   }
 
-  const paymentHistory = selectedTicket
-    ? ledger.payments.filter((payment) => payment.ticketId === selectedTicket.id)
-    : [];
+  async function handleImageUpload(key: 'customerPhoto' | 'productImage', event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const input = event.currentTarget
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    if (file.size >= 20 * 1024) {
+      showToast('படத்தின் அளவு 20 KB-க்கு குறைவாக இருக்க வேண்டும்.', 'error')
+      return
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      showToast('JPG, PNG அல்லது WebP படங்களை மட்டும் தேர்வு செய்யவும்.', 'error')
+      return
+    }
+    try {
+      updateDraft(key, await readImageAsDataUrl(file))
+    } catch (error) {
+      console.error('Image file read failed:', error)
+      showToast('படத்தைப் படிக்க முடியவில்லை.', 'error')
+    }
+  }
 
-  if (!firebaseUser) {
+  async function handleLogin(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    setAuthError('')
+    if (!supabase || !supabaseConfigured) {
+      setAuthError('Supabase அமைப்புகள் இல்லை. .env.local-ஐ நிரப்பவும்.')
+      return
+    }
+    if (email.trim().toLowerCase() !== adminEmail.toLowerCase()) {
+      setAuthError('இந்த மின்னஞ்சலுக்கு நிர்வாகி அணுகல் இல்லை.')
+      return
+    }
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+      if (error) throw error
+    } catch (error) {
+      console.error('Admin login failed:', error)
+      setAuthError('உள்நுழைவு தோல்வியடைந்தது. மின்னஞ்சல் / கடவுச்சொல்லைச் சரிபார்க்கவும்.')
+    }
+  }
+
+  async function handleSignOut(): Promise<void> {
+    if (!supabase) return
+    try {
+      const { error } = await supabase.auth.signOut()
+      if (error) throw error
+      setRecords([])
+      setDraft(initialDraft())
+      setPane('new')
+    } catch (error) {
+      console.error('Admin sign out failed:', error)
+      showToast('வெளியேற முடியவில்லை. மீண்டும் முயற்சிக்கவும்.', 'error')
+    }
+  }
+
+  async function saveReceipt(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    const aadhaarNumber = draft.aadhaarNumber.replace(/\s/g, '')
+    if (aadhaarNumber && !/^\d{12}$/.test(aadhaarNumber)) {
+      showToast('ஆதார் எண் 12 இலக்கங்களாக இருக்க வேண்டும்.', 'error')
+      return
+    }
+    const receiptNo = draft.receiptNo.trim()
+    const duplicate = records.some(record =>
+      record.receiptNo.toLowerCase() === receiptNo.toLowerCase() && record.id !== editingId,
+    )
+    if (duplicate) {
+      showToast(`ரசீது எண் ${receiptNo} ஏற்கனவே உள்ளது.`, 'error')
+      return
+    }
+    const existing = records.find(record => record.id === editingId)
+    const record: PawnRecord = {
+      id: existing?.id ?? crypto.randomUUID(),
+      receiptNo,
+      pawnDate: draft.pawnDate,
+      principal: Number(draft.principal),
+      rate: Number(draft.rate),
+      customer: draft.customer.trim(),
+      aadhaarNumber,
+      phone: draft.phone.trim(),
+      income: draft.income,
+      items: draft.items.trim(),
+      customerPhoto: draft.customerPhoto || null,
+      productImage: draft.productImage || null,
+      wtKg: draft.wtKg || '0',
+      wtGm: draft.wtGm || '0',
+      wtMg: draft.wtMg || '000',
+      approxVal: draft.approxVal,
+      dueDate: draft.dueDate,
+      status: existing?.status ?? 'ACTIVE',
+      redeemedDate: existing?.redeemedDate ?? null,
+      redeemedInterest: existing?.redeemedInterest ?? 0,
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    setSaving(true)
+    try {
+      await savePawnRecords(record)
+      const nextRecords = existing
+        ? records.map(item => item.id === record.id ? record : item)
+        : [record, ...records]
+      setRecords(nextRecords)
+      setEditingId(null)
+      showToast(`ரசீது ${receiptNo} சேமிக்கப்பட்டது.`, 'success')
+      if (saveAction.current === 'print') {
+        window.setTimeout(() => window.print(), 180)
+      } else {
+        setDraft(initialDraft(nextRecords))
+      }
+    } catch (error) {
+      console.error('Pawn receipt save failed:', error)
+      showToast('சேமிக்க முடியவில்லை. இணைப்பு / Supabase அமைப்பைச் சரிபார்க்கவும்.', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function editRecord(record: PawnRecord): void {
+    setDraft(toDraft(record))
+    setEditingId(record.id)
+    setPane('new')
+  }
+
+  function openRedeem(record: PawnRecord): void {
+    const dayCount = Math.max(1, Math.ceil(
+      (new Date(`${today()}T00:00:00`).getTime() - new Date(`${record.pawnDate}T00:00:00`).getTime()) / 86400000,
+    ))
+    const interest = Math.round((record.principal * record.rate * dayCount) / (100 * 365))
+    setRedeemInterest(String(interest))
+    setRedeemRecord(record)
+  }
+
+  async function confirmRedeem(): Promise<void> {
+    if (!redeemRecord) return
+    const updated: PawnRecord = {
+      ...redeemRecord,
+      status: 'REDEEMED',
+      redeemedDate: today(),
+      redeemedInterest: Math.max(0, Number(redeemInterest) || 0),
+      updatedAt: new Date().toISOString(),
+    }
+    try {
+      await savePawnRecords(updated)
+      setRecords(current => current.map(record => record.id === updated.id ? updated : record))
+      setRedeemRecord(null)
+      showToast(`ரசீது ${updated.receiptNo} மீட்கப்பட்டது.`, 'success')
+    } catch (error) {
+      console.error('Pawn redemption save failed:', error)
+      showToast('மீட்பைச் சேமிக்க முடியவில்லை.', 'error')
+    }
+  }
+
+  async function deleteRecord(record: PawnRecord): Promise<void> {
+    if (!window.confirm(`ரசீது ${record.receiptNo} பதிவை நிரந்தரமாக நீக்கவா?`)) return
+    try {
+      await removePawnRecord(record.id)
+      setRecords(current => current.filter(item => item.id !== record.id))
+      showToast(`ரசீது ${record.receiptNo} நீக்கப்பட்டது.`, 'info')
+    } catch (error) {
+      console.error('Pawn receipt delete failed:', error)
+      showToast('நீக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.', 'error')
+    }
+  }
+
+  function printSavedRecord(record: PawnRecord): void {
+    setDraft(toDraft(record))
+    setEditingId(null)
+    setShowDualCopy(false)
+    setPane('new')
+    window.setTimeout(() => window.print(), 180)
+  }
+
+  function shareWhatsApp(): void {
+    const phone = draft.phone.replace(/\D/g, '')
+    if (!phone || !draft.principal) {
+      showToast('WhatsApp பகிர செல்போன் எண், அசல் தொகையை நிரப்பவும்.', 'error')
+      return
+    }
+    const message = [
+      '*ஸ்ரீ வசந்தி நகை அடகு கடை, கும்பகோணம்*',
+      `ரசீது எண்: *${draft.receiptNo}*`,
+      `தேதி: ${formatDate(draft.pawnDate)}`,
+      `பெயர்: ${draft.customer.split('\n')[0]}`,
+      `பொருள்: ${draft.items.replace(/\n/g, ', ')}`,
+      `அசல் தொகை: *₹ ${formatMoney(draft.principal)}*`,
+      `மீட்க வேண்டிய தேதி: ${formatDate(draft.dueDate)}`,
+      'செல்: 9566660051',
+    ].join('\n')
+    const internationalPhone = phone.length === 10 ? `91${phone}` : phone
+    window.open(`https://wa.me/${internationalPhone}?text=${encodeURIComponent(message)}`, '_blank')
+  }
+
+  function exportCsv(): void {
+    if (!records.length) {
+      showToast('ஏற்றுமதி செய்ய பதிவுகள் இல்லை.', 'error')
+      return
+    }
+    const csvCell = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const headers = ['ரசீது எண்', 'அடகு தேதி', 'மீட்பு தேதி', 'பெயர் / முகவரி', 'செல்', 'பொருள்', 'எடை', 'அசல்', 'வட்டி %', 'நிலை', 'மீட்ட தேதி', 'வசூலான வட்டி']
+    const lines = records.map(record => [
+      record.receiptNo, formatDate(record.pawnDate), formatDate(record.dueDate), record.customer,
+      record.phone, record.items.replace(/\n/g, ' | '), `${record.wtKg} kg ${record.wtGm} g ${record.wtMg} mg`,
+      record.principal, record.rate, record.status, formatDate(record.redeemedDate ?? ''), record.redeemedInterest,
+    ].map(csvCell).join(','))
+    downloadFile(`Sri_Vasanthi_Ledger_${today()}.csv`, `\uFEFF${[headers.map(csvCell).join(','), ...lines].join('\n')}`, 'text/csv;charset=utf-8')
+  }
+
+  function exportBackup(): void {
+    if (!records.length) {
+      showToast('Backup செய்ய பதிவுகள் இல்லை.', 'error')
+      return
+    }
+    downloadFile(`Sri_Vasanthi_Backup_${today()}.json`, JSON.stringify(records, null, 2), 'application/json')
+  }
+
+  async function restoreBackup(event: FormEvent<HTMLInputElement>): Promise<void> {
+    const input = event.currentTarget
+    const file = input.files?.[0]
+    if (!file) return
+    setRestoreBusy(true)
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!Array.isArray(parsed)) throw new Error('Backup must contain an array')
+      const ids = new Set(records.map(record => record.id))
+      const receiptNumbers = new Set(records.map(record => record.receiptNo.toLowerCase()))
+      const additions = parsed.filter(isPawnRecord).filter(record => {
+        if (ids.has(record.id) || receiptNumbers.has(record.receiptNo.toLowerCase())) return false
+        ids.add(record.id)
+        receiptNumbers.add(record.receiptNo.toLowerCase())
+        return true
+      })
+      await savePawnRecords(additions)
+      setRecords(current => [...additions, ...current])
+      showToast(`${additions.length} புதிய பதிவுகள் மீட்டெடுக்கப்பட்டன.`, 'success')
+    } catch (error) {
+      console.error('Backup restore failed:', error)
+      showToast('Backup கோப்பை படிக்க / சேமிக்க முடியவில்லை.', 'error')
+    } finally {
+      setRestoreBusy(false)
+      input.value = ''
+    }
+  }
+
+  if (!authReady) return <LoadingScreen label="நிர்வாகி அணுகலைச் சரிபார்க்கிறது..." />
+  if (!user) {
     return (
-      <AuthGate
-        busy={authBusy}
+      <LoginScreen
+        email={email}
+        password={password}
         error={authError}
-        onSignIn={handleSignIn}
-        onPasswordReset={sendPasswordReset}
+        configured={supabaseConfigured}
+        onEmail={setEmail}
+        onPassword={setPassword}
+        onSubmit={handleLogin}
       />
-    );
+    )
+  }
+  if (dataLoading) return <LoadingScreen label="அடகு பதிவேட்டை ஏற்றுகிறது..." />
+  if (dataError) {
+    return (
+      <div className="fatal-screen">
+        <div className="fatal-card">
+          <CircleAlert size={36} />
+          <h1>பதிவேட்டைத் திறக்க முடியவில்லை</h1>
+          <p>{dataError}</p>
+          <div className="button-row">
+            <button className="button button-primary" onClick={() => setReloadKey(value => value + 1)}>மீண்டும் முயற்சி</button>
+            <button className="button button-quiet" onClick={() => void handleSignOut()}>வெளியேறு</button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className={`admin-app ${language === "ta" ? "admin-tamil" : ""}`}>
-      <header className="admin-header">
-        <div className="admin-brand">
-          <div className="admin-brand-mark"><Gem size={22} /></div>
+    <div className="app-shell">
+      <header className="topbar no-print">
+        <div className="brand-lockup">
+          <div className="brand-mark"><Gem size={23} /></div>
           <div>
-            <strong>{tr("shopName")}</strong>
-            <span>{tr("shopAddress")}</span>
-            <small>{tr("shopPhone")}</small>
+            <div className="brand-title">ஸ்ரீ வசந்தி நகை அடகு கடை</div>
+            <div className="brand-subtitle">கும்பகோணம் <span>•</span> லைசென்ஸ் எண்: 20, 2026-27 <span>•</span> 9566660051</div>
           </div>
         </div>
-        <div className="admin-header-actions">
-          <span className="admin-local"><i /> Local device ledger</span>
-          <button className="admin-button admin-button-light" type="button" onClick={() => void syncNow()}>Refresh</button>
-          <button className="admin-button admin-button-light" type="button" onClick={() => void handleSignOut()}>Sign out</button>
-          <label className="admin-language"><Languages size={17} /><select aria-label="Language" value={language} onChange={(event) => setLanguage(event.target.value as Language)}><option value="ta">தமிழ்</option><option value="en">English</option></select><ChevronDown size={14} /></label>
-          <button className="admin-button admin-button-light" onClick={exportBackup}><Archive size={16} />{tr("backup")}</button>
-          <button className="admin-button admin-button-light" onClick={() => fileInput.current?.click()}><RotateCcw size={16} />{tr("restore")}</button>
-          <input ref={fileInput} className="visually-hidden" type="file" accept="application/json,.json" onChange={(event) => void importBackup(event.currentTarget.files?.[0])} />
+        <div className="top-actions">
+          <button className="button button-soft" onClick={() => void installApp()}><Download size={16} /> Install App</button>
+          <button className="button button-soft" onClick={exportCsv}><FileSpreadsheet size={16} /> CSV</button>
+          <button className="button button-soft" onClick={exportBackup}><ArrowDownToLine size={16} /> Backup</button>
+          <button className="button button-soft" disabled={restoreBusy} onClick={() => restoreInput.current?.click()}>
+            <Upload size={16} /> Restore
+          </button>
+          <input ref={restoreInput} className="visually-hidden" type="file" accept=".json,application/json" onChange={event => void restoreBackup(event)} />
+          <span className="admin-chip"><ShieldCheck size={15} /> {user.email}</span>
+          <button className="icon-button signout-button" title="வெளியேறு" onClick={() => void handleSignOut()}><LogOut size={18} /></button>
         </div>
       </header>
 
-      <main className="admin-main">
-        {error && <div className="error-banner" role="alert">{error}</div>}
-        {loading && <div className="loading-banner">{language === "ta" ? "பதிவேடு ஏற்றப்படுகிறது…" : "Loading ledger…"}</div>}
-        <section className="admin-metrics">
-          <AdminMetric icon={FileClock} label={tr("totalReceipts")} value={String(ledger.tickets.length)} meta={language === "ta" ? "அனைத்து அடகு ரசீதுகள்" : "All pawn receipts"} />
-          <AdminMetric icon={CircleDollarSign} label={tr("activePrincipal")} value={formatMoney(activePrincipal, "INR", language)} meta={`${activeTickets.length} ${tr("statusActive")}`} />
-          <AdminMetric icon={Check} label={tr("redeemedPrincipal")} value={formatMoney(redeemedPrincipal, "INR", language)} meta={`${redeemedTickets.length} ${tr("statusRedeemed")}`} />
+      <main className="workspace">
+        <section className="dashboard-grid no-print">
+          <StatCard label="மொத்த அடகு சீட்டுகள்" value={String(records.length)} icon={<Archive />} color="gold" />
+          <StatCard label="செயலில் உள்ள அசல்" value={`₹ ${formatMoney(activePrincipal)}`} hint={`${activeRecords.length} சீட்டுகள் நிலுவையில்`} icon={<Wallet />} color="green" />
+          <StatCard label="மீட்கப்பட்டவை" value={String(redeemedRecords.length)} hint={`மொத்த அசல்: ₹ ${formatMoney(redeemedPrincipal)}`} icon={<Check />} color="blue" />
+          <StatCard label="வசூலான மொத்த வட்டி" value={`₹ ${formatMoney(totalInterest)}`} hint="மீட்பு கணக்குகளின்படி" icon={<Coins />} color="purple" />
         </section>
 
-        <nav className="admin-tabs" aria-label="Pawn management">
-          <button className={activeTab === "new" ? "selected" : ""} onClick={() => setActiveTab("new")}><Plus size={16} />{tr("newPawnTab")}</button>
-          <button className={activeTab === "ledger" ? "selected" : ""} onClick={() => setActiveTab("ledger")}><Archive size={16} />{tr("ledgerTab")}<span>{ledger.tickets.length}</span></button>
-        </nav>
+        <div className="page-heading no-print">
+          <div>
+            <div className="eyebrow">SHOP MANAGEMENT</div>
+            <h1>{pane === 'new' ? 'அடகு சீட்டு' : 'அடகு பதிவேடு'}</h1>
+            <p>அடகு விவரம், வாடிக்கையாளர் சீட்டு மற்றும் மீட்பு கணக்குகள்</p>
+          </div>
+          <nav className="segmented-nav" aria-label="பக்கங்கள்">
+            <button className={pane === 'new' ? 'selected' : ''} onClick={() => setPane('new')}><FilePlus2 size={17} /> புதிய சீட்டு</button>
+            <button className={pane === 'records' ? 'selected' : ''} onClick={() => setPane('records')}><BookOpen size={17} /> பதிவேடு <span className="nav-count">{records.length}</span></button>
+          </nav>
+        </div>
 
-        {activeTab === "new" && (
-          <section className="pawn-workspace">
-            <form className="pawn-form-card" onSubmit={(event) => void submitPawn(event)}>
-              <div className="admin-section-heading">
-                <div className="admin-section-icon"><Plus size={18} /></div>
-                <div><h1>{editingTicketId ? tr("edit") : tr("newPawnTab")}</h1><p>{tr("license")} · {draftReceiptNo}</p></div>
-              </div>
-              <div className="pawn-form-grid">
-                <AdminInput label={tr("name")} value={draft.customerName} onChange={(value) => updateDraft("customerName", value)} autoComplete="name" required />
-                <AdminInput label={`${tr("address")} (${tr("optional")})`} value={draft.customerAddress} onChange={(value) => updateDraft("customerAddress", value)} />
-                <AdminInput label={tr("mobile")} value={draft.mobile} onChange={(value) => updateDraft("mobile", value)} required maxLength={10} inputMode="numeric" />
-                <AdminInput label={tr("date")} value={draft.pawnDate} onChange={(value) => updateDraft("pawnDate", value)} type="date" required />
-                <label className="admin-field admin-field-full">
-                  <span>{tr("itemDetails")} *</span>
-                  <textarea rows={2} value={draft.jewelleryType} onChange={(event) => updateDraft("jewelleryType", event.target.value)} placeholder={tr("itemPlaceholder")} required />
-                  <div className="quick-items">
-                    {(["addChain", "addBangle", "addRing", "addEarring"] as const).map((key) => (
-                      <button key={key} type="button" onClick={() => updateDraft("jewelleryType", [draft.jewelleryType.trim(), tr(key)].filter(Boolean).join(", "))}><Plus size={12} />{tr(key)}</button>
-                    ))}
-                  </div>
-                </label>
-                <label className="admin-field">
-                  <span>{tr("purity")} *</span>
-                  <select value={draft.purity} onChange={(event) => updateDraft("purity", event.target.value as PawnTicket["purity"])}>
-                    {(["24K", "22K", "20K", "18K"] as const).map((purity) => <option key={purity}>{purity}</option>)}
-                  </select>
-                </label>
-                <div className="admin-field">
-                  <span>{tr("grossWeight")} *</span>
-                  <div className="weight-inputs">
-                    <AdminInput compact aria-label={tr("kilograms")} value={draft.kilograms} onChange={(value) => updateDraft("kilograms", value)} type="number" min="0" step="1" />
-                    <AdminInput compact aria-label={tr("grams")} value={draft.grams} onChange={(value) => updateDraft("grams", value)} type="number" min="0" max="999" step="1" />
-                    <AdminInput compact aria-label={tr("milligrams")} value={draft.milligrams} onChange={(value) => updateDraft("milligrams", value)} type="number" min="0" max="999" step="1" />
-                  </div>
-                  <div className="weight-units"><span>{tr("kilograms")}</span><span>{tr("grams")}</span><span>{tr("milligrams")}</span></div>
+        {pane === 'new' ? (
+          <section className="receipt-layout">
+            <form className="panel receipt-form no-print" onSubmit={event => void saveReceipt(event)}>
+              <div className="panel-heading">
+                <div>
+                  <h2>{editingId ? 'அடகு விவரம் திருத்தம்' : 'புதிய அடகு விவரம்'}</h2>
+                  <p>{editingId ? `ரசீது ${draft.receiptNo}` : 'வாடிக்கையாளர் மற்றும் நகை விவரங்களை உள்ளிடவும்'}</p>
                 </div>
-                <AdminInput label={tr("principal")} value={draft.loan} onChange={(value) => updateDraft("loan", value)} type="number" min="0.01" step="0.01" required />
-                <AdminInput label={tr("annualRate")} value={draft.rate} onChange={(value) => updateDraft("rate", value)} type="number" min="0" step="0.01" required />
-                <AdminInput label={`${tr("approximateValue")} (${tr("optional")})`} value={draft.approximateValue} onChange={(value) => updateDraft("approximateValue", value)} type="number" min="0" step="0.01" />
-                <AdminInput label={`${tr("monthlyIncome")} (${tr("optional")})`} value={draft.monthlyIncome} onChange={(value) => updateDraft("monthlyIncome", value)} type="number" min="0" step="0.01" />
-                <AdminInput label={tr("dueDate")} value={draft.maturityDate} onChange={(value) => updateDraft("maturityDate", value)} type="date" required />
-                <label className="admin-field admin-field-full"><span>{tr("notes")}</span><textarea rows={2} value={draft.notes} onChange={(event) => updateDraft("notes", event.target.value)} /></label>
-                <SignaturePad key={signatureKey} label={tr("drawSignature")} clearLabel={tr("clearSignature")} onChange={setSignatureData} />
-                <label className="admin-consent admin-field-full"><input type="checkbox" checked={signatureConsent} onChange={(event) => setSignatureConsent(event.target.checked)} />{tr("signatureConsent")}</label>
+                <button className="icon-button light" type="button" title="புதிய படிவம்" onClick={() => { setDraft(initialDraft(records)); setEditingId(null) }}><RotateCcw size={17} /></button>
               </div>
-              <p className="admin-form-note"><ShieldCheck size={15} />{editingTicketId ? tr("editNote") : tr("dataStored")}</p>
-              <div className="admin-form-actions">
-                {editingTicketId && <button className="admin-button admin-button-light" type="button" onClick={clearDraft}>{tr("cancel")}</button>}
-                <button className="admin-button admin-button-light" type="button" onClick={clearDraft}>{tr("reset")}</button>
-                <button className="admin-button admin-button-outline" type="submit" data-print="false">{editingTicketId ? tr("saveChanges") : tr("saveOnly")}</button>
-                {!editingTicketId && <button className="admin-button admin-button-gold" type="submit" data-print="true"><Printer size={16} />{tr("savePrint")}</button>}
+              <div className="form-grid two-columns">
+                <Field label="ரசீது எண்" required><input required value={draft.receiptNo} onChange={event => updateDraft('receiptNo', event.target.value)} /></Field>
+                <Field label="அடகு தேதி" required><input required type="date" value={draft.pawnDate} onChange={event => {
+                  const newDate = event.target.value
+                  const due = new Date(`${newDate}T00:00:00`)
+                  due.setFullYear(due.getFullYear() + 1)
+                  updateDraft('pawnDate', newDate)
+                  updateDraft('dueDate', `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`)
+                }} /></Field>
+                <Field label="அசல் தொகை (₹)" required><input required type="number" min="1" step="0.01" value={draft.principal} onChange={event => updateDraft('principal', event.target.value)} placeholder="0.00" /></Field>
+                <Field label="வட்டி விகிதம் (% வருடத்திற்கு)"><input type="number" min="0" step="0.1" value={draft.rate} onChange={event => updateDraft('rate', event.target.value)} /></Field>
+              </div>
+              <div className="interest-preview">
+                <div className="interest-title"><Coins size={16} /> வட்டி முன்னோட்டம் <span>மாத வட்டி: ₹ {formatMoney(Math.round(monthlyInterest))}</span></div>
+                <div className="interest-options">
+                  {[1, 3, 6, 12].map(month => <div key={month}><small>{month === 12 ? '1 வருடம்' : `${month} மாதம்`}</small><strong>₹ {formatMoney(Math.round(monthlyInterest * month))}</strong></div>)}
+                </div>
+              </div>
+              <Field label="அடகு வைப்பவரின் பெயர், முகவரி" required><textarea required rows={2} value={draft.customer} onChange={event => updateDraft('customer', event.target.value)} placeholder="பெயர், த/பெ அல்லது க/பெ, தெரு, ஊர்..." /></Field>
+              <div className="form-grid two-columns">
+                <Field label="செல் எண்" required><input required type="tel" maxLength={15} value={draft.phone} onChange={event => updateDraft('phone', event.target.value)} placeholder="9876543210" /></Field>
+                <Field label="சராசரி மாத வருமானம் (₹)"><input type="number" min="0" value={draft.income} onChange={event => updateDraft('income', event.target.value)} placeholder="25000" /></Field>
+              </div>
+              <Field label="ஆதார் எண் (12 இலக்கம்)">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  maxLength={12}
+                  value={draft.aadhaarNumber}
+                  onChange={event => updateDraft('aadhaarNumber', event.target.value.replace(/\D/g, '').slice(0, 12))}
+                  placeholder="12 இலக்க ஆதார் எண்"
+                />
+              </Field>
+              <div className="form-grid two-columns">
+                <ImageUploadField
+                  label="வாடிக்கையாளர் புகைப்படம்"
+                  image={draft.customerPhoto}
+                  capture="environment"
+                  onChange={event => void handleImageUpload('customerPhoto', event)}
+                  onCaptured={image => updateDraft('customerPhoto', image)}
+                  onRemove={() => updateDraft('customerPhoto', '')}
+                />
+                <ImageUploadField
+                  label="அடகு பொருள் படம்"
+                  image={draft.productImage}
+                  capture="environment"
+                  onChange={event => void handleImageUpload('productImage', event)}
+                  onCaptured={image => updateDraft('productImage', image)}
+                  onRemove={() => updateDraft('productImage', '')}
+                />
+              </div>
+              <Field label="அடகு பொருள் விவரம்" required>
+                <div className="quick-items">
+                  {['தங்க செயின் - 1', 'தங்க மோதிரம் - 1', 'கம்மல் ஜோடி - 1', 'தங்க வளையல் - 2'].map(item => (
+                    <button type="button" key={item} onClick={() => updateDraft('items', draft.items ? `${draft.items}\n${draft.items.split('\n').length + 1}. ${item}` : `1. ${item}`)}>+ {item.split(' - ')[0]}</button>
+                  ))}
+                </div>
+                <textarea required rows={3} value={draft.items} onChange={event => updateDraft('items', event.target.value)} placeholder={'1. தங்க செயின் - 1 (கல் பதித்தது)\n2. தங்க மோதிரம் - 1'} />
+              </Field>
+              <div className="weight-fields">
+                <div className="field-label"><Weight size={15} /> எடை விவரம்</div>
+                <div className="form-grid three-columns">
+                  <Field label="கிலோ"><input type="number" min="0" value={draft.wtKg} onChange={event => updateDraft('wtKg', event.target.value)} /></Field>
+                  <Field label="கிராம்"><input type="number" min="0" value={draft.wtGm} onChange={event => updateDraft('wtGm', event.target.value)} /></Field>
+                  <Field label="மி.கி."><input type="number" min="0" max="999" value={draft.wtMg} onChange={event => updateDraft('wtMg', event.target.value)} /></Field>
+                </div>
+              </div>
+              <div className="form-grid two-columns">
+                <Field label="பொருளின் சுமார் மதிப்பு (₹)"><input type="number" min="0" value={draft.approxVal} onChange={event => updateDraft('approxVal', event.target.value)} /></Field>
+                <Field label="மீட்க ஒப்புக்கொண்ட தேதி"><input type="date" value={draft.dueDate} onChange={event => updateDraft('dueDate', event.target.value)} /></Field>
+              </div>
+              <div className="form-footer">
+                <button className="button button-primary" type="submit" disabled={saving} onClick={() => { saveAction.current = 'print' }}><Printer size={17} /> {saving ? 'சேமிக்கிறது...' : 'சேமி & அச்சிடு'}</button>
+                <button className="button button-secondary" type="submit" disabled={saving} onClick={() => { saveAction.current = 'save' }}><Check size={17} /> சேமி மட்டும்</button>
               </div>
             </form>
 
-            <aside className="receipt-preview-card">
-              <div className="receipt-preview-heading"><div><h2>{tr("receiptPreview")}</h2><p>{draftReceiptNo}</p></div><span className="preview-live"><i /> LIVE</span></div>
-              <div className="receipt-preview-frame"><div className="receipt-preview-scale"><ReceiptPrint ticket={previewTicket} customer={previewCustomer} signature={signatureData} language={language} /></div></div>
-              <p className="preview-caption">{tr("receiptNote")}</p>
-            </aside>
+            <div className="preview-column">
+              <div className="preview-toolbar no-print">
+                <div><Printer size={16} /> ரசீது முன்னோட்டம்</div>
+                <label className="toggle-label"><input type="checkbox" checked={showDualCopy} onChange={event => setShowDualCopy(event.target.checked)} /> இரட்டை நகல்</label>
+                <button className="button button-soft" onClick={shareWhatsApp}><span className="whatsapp-mark">◉</span> WhatsApp</button>
+                <button className="button button-soft" onClick={() => window.print()}><Printer size={16} /> அச்சிடு</button>
+              </div>
+              <ReceiptCard draft={draft} dual={showDualCopy} />
+            </div>
           </section>
-        )}
-
-        {activeTab === "ledger" && (
-          <section className="ledger-card">
+        ) : (
+          <section className="panel ledger-panel no-print">
             <div className="ledger-heading">
-              <div><h1>{tr("ledgerTab")}</h1><p>{filteredTickets.length} / {ledger.tickets.length}</p></div>
-              <button className="admin-button admin-button-gold" onClick={() => { clearDraft(); setActiveTab("new"); }}><Plus size={16} />{tr("newPawnTab")}</button>
+              <div>
+                <h2>சேமிக்கப்பட்ட அடகு சீட்டுகள்</h2>
+                <p>ரசீது எண், பெயர், பொருள் அல்லது செல்போன் மூலம் தேடலாம்</p>
+              </div>
+              <div className="ledger-tools">
+                <label className="search-box"><Search size={17} /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="தேடுக..." /></label>
+                <label className="select-box"><select value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
+                  <option value="ALL">அனைத்து நிலைகள்</option>
+                  <option value="ACTIVE">செயலில் உள்ளவை</option>
+                  <option value="OVERDUE">கெடு முடிந்தவை</option>
+                  <option value="REDEEMED">மீட்கப்பட்டவை</option>
+                </select><ChevronDown size={16} /></label>
+              </div>
             </div>
-            <div className="ledger-filters">
-              <label className="ledger-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tr("searchReceipts")} /></label>
-              <label className="ledger-status"><span>{tr("status")}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}>
-                <option value="all">{tr("allStatus")}</option><option value="active">{tr("statusActive")}</option><option value="redeemed">{tr("statusRedeemed")}</option>
-              </select></label>
+            <div className="table-scroll">
+              <table className="ledger-table">
+                <thead><tr><th>ரசீது / தேதி</th><th>வாடிக்கையாளர்</th><th>பொருள் / எடை</th><th className="align-right">அசல் தொகை</th><th>நிலை</th><th className="align-right">செயல்கள்</th></tr></thead>
+                <tbody>
+                  {filteredRecords.map(record => {
+                    const overdue = record.status === 'ACTIVE' && record.dueDate < today()
+                    return (
+                      <tr key={record.id}>
+                        <td><strong className="receipt-no">{record.receiptNo}</strong><small>{formatDate(record.pawnDate)} · கெடு {formatDate(record.dueDate)}</small></td>
+                        <td><strong>{record.customer.split('\n')[0]}</strong><small>{record.phone}</small></td>
+                        <td><strong className="items-cell">{record.items}</strong><small>{record.wtKg} கி.கி · {record.wtGm} கிராம் · {record.wtMg} மி.கி</small></td>
+                        <td className="align-right amount-cell">₹ {formatMoney(record.principal)}</td>
+                        <td>{record.status === 'REDEEMED'
+                          ? <span className="status-pill redeemed">மீட்கப்பட்டது</span>
+                          : <span className={`status-pill ${overdue ? 'overdue' : 'active'}`}>{overdue ? 'கெடு முடிந்தது' : 'செயலில்'}</span>}</td>
+                        <td><div className="row-actions">
+                          <button className="icon-button light" title="அச்சிடு" onClick={() => printSavedRecord(record)}><Printer size={16} /></button>
+                          <button className="icon-button light edit-action" title="திருத்து" onClick={() => editRecord(record)}><UserRound size={16} /></button>
+                          {record.status === 'ACTIVE' && <button className="button button-redeem" onClick={() => openRedeem(record)}><HandCoins size={15} /> மீட்பு</button>}
+                          <button className="icon-button danger" title="நீக்கு" onClick={() => void deleteRecord(record)}><Trash2 size={16} /></button>
+                        </div></td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+              {filteredRecords.length === 0 && <div className="empty-state"><BookOpen size={30} /><strong>பதிவுகள் இல்லை</strong><span>தேடல் அல்லது filter-ஐ மாற்றிப் பார்க்கவும்.</span><button className="button button-primary" onClick={() => setPane('new')}>புதிய சீட்டு உருவாக்கு</button></div>}
             </div>
-            {filteredTickets.length === 0 ? <div className="admin-empty"><Gem size={26} /><p>{tr("noLedger")}</p></div> : (
-              <div className="ledger-table-scroll"><table className="ledger-table">
-                <thead><tr><th>{tr("receipt")}</th><th>{tr("customer")}</th><th>{tr("mobile")}</th><th>{tr("date")}</th><th>{tr("jewellery")}</th><th>{tr("loanAmount")}</th><th>{tr("status")}</th><th>{tr("actions")}</th></tr></thead>
-                <tbody>{filteredTickets.map((ticket) => {
-                  const customer = ledger.customers.find((item) => item.id === ticket.customerId);
-                  return <tr key={ticket.id}>
-                    <td><strong className="receipt-code">{ticket.receiptNo}</strong></td>
-                    <td><div className="ledger-customer"><span>{customer?.name.charAt(0).toUpperCase() ?? "?"}</span><strong>{customer?.name ?? "—"}</strong></div></td>
-                    <td>{customer?.mobile ?? "—"}</td>
-                    <td>{new Intl.DateTimeFormat(language === "ta" ? "ta-IN" : "en-IN", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(`${ticket.pawnDate}T00:00:00Z`))}</td>
-                    <td className="ledger-item-cell">{ticket.jewelleryType}</td>
-                    <td className="ledger-money">{formatMoney(ticket.loanPaise, "INR", language)}</td>
-                    <td><span className={`ledger-status-pill ${ticket.status}`}>{ticket.status === "active" ? tr("statusActive") : tr("statusRedeemed")}</span></td>
-                    <td><div className="ledger-row-actions">
-                      <RowAction label={tr("print")} onClick={() => void printReceipt(ticket)}><Printer size={16} /></RowAction>
-                      <RowAction label={tr("paymentsLabel")} onClick={() => openPayment(ticket, "history")}><FileClock size={16} /></RowAction>
-                      {ticket.status === "active" && <>
-                        <RowAction label={tr("edit")} onClick={() => void editTicket(ticket)}><Pencil size={16} /></RowAction>
-                        <RowAction label={tr("recordPayment")} onClick={() => openPayment(ticket, "payment")}><WalletCards size={16} /></RowAction>
-                        <RowAction label={tr("redeem")} onClick={() => openPayment(ticket, "redeem")}><RotateCcw size={16} /></RowAction>
-                        <RowAction label={tr("delete")} danger onClick={() => void removeTicket(ticket)}><Trash2 size={16} /></RowAction>
-                      </>}
-                    </div></td>
-                  </tr>;
-                })}</tbody>
-              </table></div>
-            )}
           </section>
         )}
-
-        <footer className="admin-footer"><span><ShieldCheck size={15} />Firebase login + local cache</span><span>{tr("shopName")}</span></footer>
       </main>
 
-      {paymentDialog && selectedTicket && selectedCustomer && selectedBalance && (
-        <div className="admin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPaymentDialog(null); }}>
-          <div className="admin-modal" role="dialog" aria-modal="true" aria-labelledby="payment-title">
-            {paymentDialog === "history" ? <>
-              <div className="admin-modal-heading"><div><h2 id="payment-title">{tr("paymentsLabel")} · {selectedTicket.receiptNo}</h2><p>{selectedCustomer.name} · {selectedCustomer.mobile}</p></div><button className="admin-modal-close" onClick={() => setPaymentDialog(null)}>×</button></div>
-              {paymentHistory.length === 0 ? <div className="admin-empty compact"><WalletCards size={22} /><p>{tr("noRecords")}</p></div> : <div className="history-list">{paymentHistory.map((payment) => <div key={payment.id}><span>{payment.transactionNo}<small>{new Intl.DateTimeFormat(language === "ta" ? "ta-IN" : "en-IN", { dateStyle: "medium" }).format(new Date(payment.paidAt))} · {payment.method}</small></span><strong>{formatMoney(payment.amountPaise, "INR", language)}</strong></div>)}</div>}
-              <div className="admin-modal-actions"><button className="admin-button admin-button-light" onClick={() => setPaymentDialog(null)}>{tr("close")}</button></div>
-            </> : <form onSubmit={(event) => void submitPayment(event)}>
-              <div className="admin-modal-heading"><div><h2 id="payment-title">{paymentDialog === "redeem" ? tr("confirmRedeem") : tr("recordPayment")}</h2><p>{selectedTicket.receiptNo} · {selectedCustomer.name}</p></div><button type="button" className="admin-modal-close" onClick={() => setPaymentDialog(null)}>×</button></div>
-              <div className="settlement-summary">
-                <div><span>{tr("interestDue")}</span><strong>{formatMoney(selectedBalance.interestPaise, "INR", language)}</strong></div>
-                <div><span>{tr("principalDue")}</span><strong>{formatMoney(selectedBalance.principalPaise, "INR", language)}</strong></div>
-                <div className="settlement-total"><span>{tr("balance")}</span><strong>{formatMoney(selectedBalance.totalPaise, "INR", language)}</strong></div>
-              </div>
-              {paymentDialog === "redeem" && <p className="redeem-warning">{tr("confirmRedeemMessage")}</p>}
-              <div className="admin-payment-fields">
-                <AdminInput label={tr("amount")} value={paymentDialog === "redeem" ? (selectedBalance.totalPaise / 100).toFixed(2) : undefined} name="amount" type="number" min="0.01" max={(selectedBalance.totalPaise / 100).toFixed(2)} step="0.01" defaultValue={paymentDialog === "redeem" ? undefined : (selectedBalance.totalPaise / 100).toFixed(2)} required readOnly={paymentDialog === "redeem"} />
-                <label className="admin-field"><span>{tr("method")}</span><select name="method"><option value="Cash">{tr("cash")}</option><option value="UPI">UPI</option><option value="Other">{tr("other")}</option></select></label>
-              </div>
-              {paymentDialog === "payment" && <p className="payment-note">{tr("fullPaymentNote")}</p>}
-              <div className="admin-modal-actions"><button type="button" className="admin-button admin-button-light" onClick={() => setPaymentDialog(null)}>{tr("cancel")}</button><button className="admin-button admin-button-gold" type="submit">{paymentDialog === "redeem" ? tr("confirmRedeem") : tr("savePayment")}</button></div>
-            </form>}
-          </div>
+      {redeemRecord && (
+        <div className="modal-backdrop no-print" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setRedeemRecord(null) }}>
+          <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="redeem-title">
+            <div className="modal-heading"><div className="modal-icon"><HandCoins /></div><div><h2 id="redeem-title">நகை மீட்பு</h2><p>{redeemRecord.receiptNo} · {redeemRecord.customer.split('\n')[0]}</p></div><button className="icon-button light" onClick={() => setRedeemRecord(null)}><X size={18} /></button></div>
+            <div className="redeem-summary"><span>அடகு தேதி<strong>{formatDate(redeemRecord.pawnDate)}</strong></span><span>அசல் தொகை<strong>₹ {formatMoney(redeemRecord.principal)}</strong></span></div>
+            <Field label={`வட்டி தொகை (${redeemRecord.rate}% வருடத்திற்கு)`}><input type="number" min="0" value={redeemInterest} onChange={event => setRedeemInterest(event.target.value)} /></Field>
+            <div className="redeem-total"><span>மொத்த மீட்புத் தொகை</span><strong>₹ {formatMoney(redeemRecord.principal + (Number(redeemInterest) || 0))}</strong></div>
+            <div className="form-footer"><button className="button button-quiet" onClick={() => setRedeemRecord(null)}>ரத்து செய்</button><button className="button button-primary" onClick={() => void confirmRedeem()}><Check size={17} /> மீட்கப்பட்டது என பதிவு செய்</button></div>
+          </section>
         </div>
       )}
 
-      {printTicket && printCustomer && <div className="receipt-print-root"><ReceiptPrint ticket={printTicket} customer={printCustomer} signature={printSignature} language={language} /></div>}
-      {notice && <div className="admin-toast" role="status"><Check size={17} />{notice}</div>}
+      {toast && <div className={`toast toast-${toast.tone}`} role="status">{toast.tone === 'error' ? <CircleAlert size={17} /> : <Check size={17} />}{toast.text}</div>}
     </div>
-  );
+  )
 }
 
-function AdminMetric({ icon: Icon, label, value, meta }: { icon: typeof Users; label: string; value: string; meta: string }) {
-  return <article className="admin-metric"><div className="admin-metric-top"><span><Icon size={18} /></span><small>{label}</small></div><strong>{value}</strong><p>{meta}</p></article>;
-}
-
-function AdminInput({
-  label, value, onChange, compact = false, ...props
-}: {
-  label?: string;
-  value?: string;
-  onChange?: (value: string) => void;
-  compact?: boolean;
-  name?: string;
-} & Omit<InputHTMLAttributes<HTMLInputElement>, "onChange">) {
-  return <label className={`admin-field ${compact ? "admin-field-compact" : ""}`}>
-    {label && <span>{label}{props.required ? " *" : ""}</span>}
-    <input {...props} value={value} onChange={onChange ? (event) => onChange(event.target.value) : undefined} />
-  </label>;
-}
-
-function RowAction({ label, onClick, danger = false, children }: {
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-  children: ReactNode;
+function LoginScreen(props: {
+  email: string
+  password: string
+  error: string
+  configured: boolean
+  onEmail: (value: string) => void
+  onPassword: (value: string) => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }) {
-  return <button className={`ledger-action ${danger ? "danger" : ""}`} type="button" title={label} aria-label={label} onClick={onClick}>{children}</button>;
+  return (
+    <main className="login-screen">
+      <div className="login-card">
+        <div className="login-brand"><div className="brand-mark"><Gem size={25} /></div><span>நிர்வாகி அணுகல்</span></div>
+        <h1>ஸ்ரீ வசந்தி<br />நகை அடகு கடை</h1>
+        <p className="login-description">அடகு ரசீது மற்றும் பதிவேட்டைத் தொடர உள்நுழையவும்.</p>
+        {!props.configured && <div className="setup-notice"><CircleAlert size={18} /><span>.env.local-ல் Supabase விவரங்களை அமைத்து app-ஐ மீண்டும் தொடங்கவும்.</span></div>}
+        {props.error && <div className="login-error" role="alert"><CircleAlert size={17} />{props.error}</div>}
+        <form onSubmit={props.onSubmit}>
+          <Field label="நிர்வாகி மின்னஞ்சல்"><input required type="email" autoComplete="username" value={props.email} onChange={event => props.onEmail(event.target.value)} /></Field>
+          <Field label="கடவுச்சொல்"><input required type="password" autoComplete="current-password" value={props.password} onChange={event => props.onPassword(event.target.value)} /></Field>
+          <button className="button button-primary login-submit" disabled={!props.configured}><LockKeyhole size={17} /> பாதுகாப்பாக உள்நுழைக</button>
+        </form>
+        <div className="login-security"><ShieldCheck size={15} /> Supabase Authentication · Admin only</div>
+      </div>
+    </main>
+  )
 }
 
-export default App;
+function LoadingScreen({ label }: { label: string }) {
+  return <div className="loading-screen"><div className="loading-spinner" /><p>{label}</p></div>
+}
+
+function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return <label className="field"><span>{label}{required && <b> *</b>}</span>{children}</label>
+}
+
+function ImageUploadField({
+  label,
+  image,
+  capture,
+  onChange,
+  onCaptured,
+  onRemove,
+}: {
+  label: string
+  image: string
+  capture: 'user' | 'environment'
+  onChange: (event: ChangeEvent<HTMLInputElement>) => void
+  onCaptured: (image: string) => void
+  onRemove: () => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const [cameraOpen, setCameraOpen] = useState(false)
+  const [cameraReady, setCameraReady] = useState(false)
+  const [cameraError, setCameraError] = useState('')
+
+  useEffect(() => {
+    if (!cameraOpen) return
+    let active = true
+    setCameraReady(false)
+    setCameraError('')
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('இந்த browser-ல் camera ஆதரவு இல்லை. HTTPS இணைப்பில் திறக்கவும்.')
+      return
+    }
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false,
+    }).then(stream => {
+      if (!active) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      streamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        void videoRef.current.play().then(() => setCameraReady(true)).catch(error => {
+          console.error('Camera preview failed:', error)
+          setCameraError('Camera preview-ஐ திறக்க முடியவில்லை.')
+        })
+      }
+    }).catch(error => {
+      if (!active) return
+      console.error('Camera access failed:', error)
+      setCameraError('Camera-ஐ திறக்க முடியவில்லை. Browser camera permission-ஐ அனுமதிக்கவும்.')
+    })
+    return () => {
+      active = false
+      streamRef.current?.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+      if (videoRef.current) videoRef.current.srcObject = null
+    }
+  }, [cameraOpen])
+
+  async function takePhoto(): Promise<void> {
+    if (!videoRef.current) return
+    try {
+      onCaptured(await captureVideoFrame(videoRef.current))
+      setCameraOpen(false)
+    } catch (error) {
+      console.error('Camera capture failed:', error)
+      setCameraError('படத்தை 20 KB-க்கு குறைவாக சுருக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.')
+    }
+  }
+
+  return (
+    <>
+      <Field label={label}>
+        <button type="button" className="button button-camera" onClick={() => setCameraOpen(true)}>
+          <Camera size={16} /> படம் எடுக்க
+        </button>
+        <small className="image-help">பின்பக்க camera · JPG, PNG அல்லது WebP · 20 KB-க்கு குறைவு</small>
+        <input type="file" accept="image/jpeg,image/png,image/webp" capture={capture} onChange={onChange} />
+        {image && (
+          <div className="image-preview">
+            <img src={image} alt={label} />
+            <button type="button" className="button button-quiet" onClick={onRemove}>படத்தை நீக்கு</button>
+          </div>
+        )}
+      </Field>
+      {cameraOpen && (
+        <div className="camera-backdrop">
+          <section className="camera-dialog" role="dialog" aria-modal="true" aria-label={`${label} — படம் எடுக்க`}>
+            <div className="camera-heading">
+              <strong>{label}</strong>
+              <button type="button" className="icon-button light" onClick={() => setCameraOpen(false)} aria-label="மூடு"><X size={18} /></button>
+            </div>
+            <video ref={videoRef} autoPlay playsInline muted />
+            {cameraError && <p className="camera-error">{cameraError}</p>}
+            <div className="camera-actions">
+              <button type="button" className="button button-quiet" onClick={() => setCameraOpen(false)}>ரத்து</button>
+              <button type="button" className="button button-primary" disabled={!cameraReady} onClick={() => void takePhoto()}>
+                <Camera size={16} /> படம் எடுக்க
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </>
+  )
+}
+
+function StatCard({ label, value, hint, icon, color }: { label: string; value: string; hint?: string; icon: React.ReactNode; color: string }) {
+  return <article className={`stat-card stat-${color}`}><div className="stat-copy"><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</div><div className="stat-icon">{icon}</div></article>
+}
+
+function ReceiptCard({ draft, dual }: { draft: PawnDraft; dual: boolean }) {
+  const copy = (label: string) => (
+    <article className="receipt-sheet" key={label}>
+      <div className="receipt-frame">
+        <div className="receipt-overline"><span>உ</span><strong>ஸ்ரீ ராமஜெயம்</strong><span className="copy-badge">{label}</span><b>ரசீது: {draft.receiptNo || 'SV-1001'}</b></div>
+        <header className="receipt-header">
+          <h2>ஸ்ரீ வசந்தி நகை அடகு கடை</h2>
+          <p>முகவரி: காசிராமன் தெரு, மாநகராட்சி புதிய வணிக வளாகம், கடை எண் – 2, கும்பகோணம்.</p>
+          <p>செல்: 9566660051</p>
+          <div className="receipt-meta"><span>லைசென்ஸ் எண்: <b>20, 2026-27</b></span><strong>அடகு சீட்டு</strong><span>அடகு தேதி: <b>{formatDate(draft.pawnDate)}</b></span></div>
+        </header>
+        <div className="receipt-money">
+          <strong>அசல் ரூ.: ₹ {draft.principal ? formatMoney(draft.principal) : '__________________'} /-</strong>
+          <span>வட்டி விகிதம்: <b>{draft.rate || '16'}%</b> வருடத்திற்கு</span>
+          {draft.principal && <small>{numberToTamilWords(Number(draft.principal))}</small>}
+        </div>
+        <p className="receipt-preamble">அடியில் கண்ட பொருள்கள் எங்களிடம் அடகு வைக்கப்பட்டுள்ளது.</p>
+        <div className="receipt-box"><small>அடகு வைப்பவரின் பெயர், முகவரி</small><p>{draft.customer || '________________________________________________________________'}</p></div>
+        <div className="receipt-items"><div><small>அடகு பொருள் விவரம்</small><p>{draft.items || '—'}</p></div><table><tbody><tr><th>கிலோ</th><th>கிராம்</th><th>மி.கி.</th></tr><tr><td>{draft.wtKg || '0'}</td><td>{draft.wtGm || '0'}</td><td>{draft.wtMg || '000'}</td></tr></tbody></table></div>
+        <div className="receipt-bottom"><span>சுமார் மதிப்பு: <b>{draft.approxVal ? `₹ ${formatMoney(draft.approxVal)}` : '________________'}</b></span><span>மீட்க ஒப்புக்கொண்ட தேதி: <b>{formatDate(draft.dueDate)}</b></span></div>
+        <div className="receipt-contact"><span>மாத வருமானம்: <b>{draft.income ? `₹ ${formatMoney(draft.income)}` : '__________'}</b></span><span>செல் எண்: <b>{draft.phone || '________________'}</b></span></div>
+        <div className="receipt-signatures"><span>அடகு வைத்தவர் கையெழுத்து</span><span>அடகு பிடிப்பவர் கையெழுத்து</span></div>
+        <footer>குறிப்பு: இந்த சீட்டை பத்திரமாக பாதுகாப்பாக வைத்துக் கொள்ளவும்.</footer>
+      </div>
+    </article>
+  )
+  return <div className="receipt-print-area">{copy(dual ? 'வாடிக்கையாளர் நகல்' : 'வாடிக்கையாளர் நகல்')}{dual && copy('அலுவலக நகல்')}</div>
+}
+
+function downloadFile(filename: string, content: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+export default App

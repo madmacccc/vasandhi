@@ -1,61 +1,15 @@
-# Golden Ledger — Pawn Management
+# ஸ்ரீ வசந்தி நகை அடகு கடை
 
-A Firebase-authenticated pawn billing application for Sri Vasanthi Jewellery Pawn Broker, with a local SQLite cache. The interface provides Tamil/English switching, a pawn-entry form with a live A4 receipt preview, searchable ticket ledger, payment collection/history, full-settlement redemption, and JSON backup/restore.
+Browser-based billing and pawn-ledger app built with React 19, TypeScript and Vite. Features Tamil pawn receipts, printable customer/office copies, searchable ledger, interest preview, redemption tracking, customer Aadhaar number and photos (JPG/PNG/WebP, up to 20 KB each), CSV export, JSON backup/restore and an installable mobile PWA.
 
-The pawn-ticket form also captures the receipt's estimated article value and the customer's declared average monthly income. It includes a signature pad; saving requires the customer's consent. Signature images are encrypted with AES-256-GCM using a random key stored in the operating-system credential store in Tauri or IndexedDB in the browser, and are decrypted only to print a receipt. The thumbprint option shown on the paper form is not captured digitally. If the key is removed or lost, a previously encrypted signature cannot be recovered.
+## Setup
 
-> **Scope and readiness:** This build uses Firebase only for administrator authentication. Customer, ticket and payment records remain in a device-local SQLite cache; there is no cloud ledger or cross-device sync. Browser and Tauri installations maintain separate databases. User/role administration, customer photo/ID management, thermal-printer integration, advanced report/export formats, and Windows installer verification are not implemented. A4 black-and-white pawn receipts can be printed from the preview or ledger. Test and retain backups independently before relying on them. The interface follows the supplied admin reference, and the traditional receipt is a responsive reconstruction rather than a pixel-exact copy. Do not use this build as the sole record system for real financial operations until the remaining security controls and acceptance testing have been completed.
+1. Install Node.js 22.12 or later and run `npm install`.
+2. In Supabase Dashboard, enable **Authentication → Providers → Email**, require email confirmation, and disable public sign-ups. Create or invite the shop admin in **Authentication → Users** and confirm the admin email.
+3. In [supabase-setup.sql](./supabase-setup.sql), replace the admin email in the RLS policies with the exact admin email and run the SQL in Supabase SQL Editor. The script adds separate columns for every pawn-record field and backfills existing records from `record_data`.
+4. Copy [.env.example](./.env.example) to `.env.local` and fill in the Supabase Project URL, Supabase anon/publishable key, and the same admin email. Never put the Supabase service-role key in the app.
+5. Start the app with `npm run dev`. Open the forwarded port **5173** in your browser (Codespaces will show an **Open in Browser** prompt).
 
-## Requirements
+For production, run `npm run build` and deploy the generated `dist/` folder to an HTTPS static web host. Configure the site's URL in Supabase Authentication settings. On a mobile browser, open the deployed site and choose **Install app** / **Add to Home Screen** from the browser menu. The app shell can open offline after it has loaded once, but sign-in, saving and loading records still require an internet connection to Supabase. The login screen and database row-level security both restrict access to the configured admin email. Firebase accounts/passwords do not transfer; create the admin in Supabase and set a new password. Existing pawn records remain in Supabase. Keep regular JSON backups; deleting a record is permanent.
 
-- Node.js 20.19+ or 22.12+
-- Rust stable, Cargo and the platform prerequisites for Tauri 2
-- On Windows, Visual Studio C++ Build Tools and WebView2 Runtime
-- Firebase project with Email/Password authentication enabled
-
-## Run locally
-
-```sh
-npm install
-npm run test
-npm run tauri dev
-```
-
-`npm run dev` starts the browser version at `http://localhost:5173`. Browser records are cached as SQLite (sql.js/WebAssembly) in IndexedDB for the same browser profile and origin. Tauri saves `gold-pawn-pro.db` in its application data directory. Each installation keeps its own offline cache; Supabase is the shared source of truth and pending local changes are synchronized after sign-in and when connectivity returns. Use the app's JSON backup and restore controls for manual transfers.
-
-The browser version encrypts signatures with Web Crypto and stores its non-exportable key in IndexedDB; it requires HTTPS or localhost. This protects the signature value at rest from casual inspection but does not protect it from malicious scripts running in that browser origin. Clearing browser site data, changing profiles, or changing the origin removes access to the local records and encryption key. Back up browser data before clearing site storage. Browser storage quotas and eviction are controlled by the browser.
-
-## Financial calculation behavior
-
-Money is stored as integer paise. Gold weights are stored to three decimal places in grams. Each ticket records the annual rate agreed for that ticket; the initial shop default is 16% p.a. The interest helpers support:
-
-- Daily simple interest using an explicit 360- or 365-day basis.
-- Monthly simple interest prorated within actual calendar months.
-- Annual simple interest prorated within actual calendar years.
-
-The initial default is daily/365. These are explicit calculation options, not a claim that one method or rounding rule is legally or commercially universal. Have the shop approve the applicable method, day-count basis, payment allocation and rounding terms before use. Current payment allocation applies accrued interest first and then principal. A settlement must match the displayed balance; SQLite validates the local write and the Supabase function records payment plus redemption atomically.
-
-## Firebase authentication setup
-
-1. In Firebase Console, enable **Authentication → Sign-in method → Email/Password** and add authorised domains for local development and deployment.
-2. Create admin accounts in the Firebase Console. Public account creation is intentionally disabled in the app.
-3. Copy `.env.example` to `.env` and set the Firebase web app's API key, auth domain, project ID, and app ID. These Firebase values are public web-app configuration, not service credentials.
-4. Start the app and sign in with an admin account created in Firebase Console. Password reset is sent by Firebase.
-
-The local SQLite cache and signature-encryption key are device/profile-specific. Records are not synchronized to Supabase or another device. Use the app's JSON backup and restore controls to transfer records manually.
-
-## Windows installer
-
-On a Windows machine with Rust and Tauri prerequisites installed:
-
-```powershell
-npm install
-npm run test
-npm run tauri build
-```
-
-Tauri is configured to emit NSIS and MSI bundles under `src-tauri/target/release/bundle/`. Installer signing, icon assets, reliable migration/upgrade testing, thermal-printer models and end-to-end Windows acceptance are still required before distribution.
-
-## Privacy
-
-The current customer form deliberately does not collect Aadhaar or other government ID numbers; secure encrypted ID storage and key management have not been implemented. The local SQLite cache is not encrypted. Restrict access to the device account and make verified backups; do not treat the local file as protected customer-data storage.
+The Aadhaar number and image data are stored with each record in Supabase and are sensitive personal information. Keep the table's admin-only row-level security enabled and restrict project access. Images are stored as data URLs in `record_data` and in their dedicated table columns.

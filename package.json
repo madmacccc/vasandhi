@@ -1,41 +1,30 @@
 {
-  "name": "gold-pawn-pro",
+  "name": "sri-vasanthi-pawn-ledger",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "description": "Tamil pawn receipt and ledger web application",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
-    "test": "vitest run",
-    "preview": "vite preview --host 0.0.0.0",
-    "tauri": "tauri"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
-    "@firebase/app": "^0.16.7",
-    "@firebase/auth": "^1.13.11",
-    "@fontsource/dm-sans": "^5.2.6",
-    "@fontsource/manrope": "^5.2.6",
-    "@fontsource/noto-sans-tamil": "^5.2.6",
-    "@fontsource/noto-serif-tamil": "^5.3.0",
-    "@supabase/supabase-js": "^2.57.0",
-    "@tauri-apps/api": "^2.8.0",
-    "@tauri-apps/plugin-sql": "^2.3.0",
-    "lucide-react": "^0.468.0",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
-    "sql.js": "^1.16.0"
+    "@fontsource/noto-sans-tamil": "^5.3.0",
+    "@supabase/supabase-js": "^2.119.2",
+    "lucide-react": "^1.78.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.4",
-    "@types/react": "^19.1.10",
-    "@types/react-dom": "^19.1.7",
-    "@types/sql.js": "^1.4.11",
-    "@vitejs/plugin-react": "^5.0.2",
-    "autoprefixer": "^10.4.21",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.17",
-    "typescript": "~5.8.3",
-    "vite": "^7.1.4",
-    "vitest": "^5.1.0"
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.14.7"
   }
 }
